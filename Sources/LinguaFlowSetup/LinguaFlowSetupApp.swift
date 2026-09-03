@@ -1,10 +1,20 @@
+import AppKit
 import SwiftUI
 import Translation
 
+@MainActor
+private final class SetupAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
+
 @main
 struct LinguaFlowSetupApp: App {
+    @NSApplicationDelegateAdaptor(SetupAppDelegate.self) private var appDelegate
+
     var body: some Scene {
-        WindowGroup("LinguaFlow 设置") {
+        WindowGroup("LinguaFlow 设置", id: "setup") {
             TranslationSetupView()
                 .frame(width: 480, height: 300)
         }
@@ -13,6 +23,7 @@ struct LinguaFlowSetupApp: App {
 }
 
 private struct TranslationSetupView: View {
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var configuration: TranslationSession.Configuration?
     @State private var isPreparing = false
     @State private var status = "尚未检查本地翻译模型"
@@ -40,7 +51,7 @@ private struct TranslationSetupView: View {
                 .disabled(isPreparing)
 
                 Button("完成") {
-                    NSApplication.shared.terminate(nil)
+                    dismissWindow(id: "setup")
                 }
             }
         }

@@ -8,6 +8,7 @@ destination_dir="$HOME/Library/Input Methods"
 destination_bundle="$destination_dir/LinguaFlow.app"
 
 pkill -x LinguaFlowIME >/dev/null 2>&1 || true
+pkill -x LinguaFlowSetup >/dev/null 2>&1 || true
 mkdir -p "$destination_dir"
 ditto "$source_bundle" "$destination_bundle"
 codesign --verify --deep --strict "$destination_bundle"

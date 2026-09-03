@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed the setup helper's Done button so it closes the window and exits the helper.
 - Created the native macOS InputMethodKit application bundle.
 - Added Simplified Chinese full-pinyin input through `librime`.
 - Added a no-activation candidate and English preview panel.
