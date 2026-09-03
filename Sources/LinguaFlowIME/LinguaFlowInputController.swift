@@ -14,7 +14,11 @@ final class LinguaFlowInputController: IMKInputController {
     private var currentHighlightedIndex = 0
     private var sentenceBuffer = CommittedSentenceBuffer(maxCharacters: 280)
     private var latestTranslation: TranslationResult?
-    private let panelController = PreviewPanelController()
+    private var translationRevision: UInt64 = 0
+    private var translationSourceText: String?
+    private var translationState: PreviewPanelController.TranslationState = .hidden
+    private var lastValidAnchor: NSRect?
+    private let panelController = PreviewPanelController.shared
     private var coordinator: TranslationCoordinator!
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
@@ -27,12 +31,21 @@ final class LinguaFlowInputController: IMKInputController {
             debounce: .milliseconds(400)
         )
         coordinator.onResult = { [weak self] result in
-            guard let self, self.sentenceBuffer.revision == result.revision else { return }
+            guard
+                let self,
+                self.translationRevision == result.revision,
+                self.translationSourceText == result.sourceText
+            else {
+                return
+            }
             self.latestTranslation = result
-            self.refreshPanel(translation: .result(result.translatedText))
+            self.translationState = .result(result.translatedText)
+            self.renderPanel(client: self.activeClient)
         }
         coordinator.onError = { [weak self] error in
-            self?.refreshPanel(translation: .message(error.localizedDescription))
+            guard let self else { return }
+            self.translationState = .message(error.localizedDescription)
+            self.renderPanel(client: self.activeClient)
         }
     }
 
@@ -43,7 +56,8 @@ final class LinguaFlowInputController: IMKInputController {
     override func deactivateServer(_ sender: Any!) {
         commitComposition(sender)
         clearDocumentContext()
-        panelController.hide()
+        panelController.hide(owner: self)
+        lastValidAnchor = nil
         activeClient = nil
     }
 
@@ -77,8 +91,9 @@ final class LinguaFlowInputController: IMKInputController {
         guard let event, event.type == .keyDown, let engine else { return false }
         let client = client(from: sender)
         activeClient = client
+        captureCaretAnchor(client: client)
 
-        if IsSecureEventInputEnabled(), sentenceBuffer.currentSnapshot != nil {
+        if IsSecureEventInputEnabled(), translationSourceText != nil {
             clearTranslationContext()
         }
 
@@ -102,10 +117,8 @@ final class LinguaFlowInputController: IMKInputController {
 
         if !snapshot.consumed {
             if event.keyCode == 51 {
-                if let updated = sentenceBuffer.removeLastCharacter() {
-                    latestTranslation = nil
-                    coordinator.submit(updated)
-                    refreshPanel(translation: .loading)
+                if sentenceBuffer.removeLastCharacter() != nil {
+                    updateTranslationDraftAndPanel(client: client)
                 } else {
                     clearDocumentContext()
                 }
@@ -120,9 +133,8 @@ final class LinguaFlowInputController: IMKInputController {
     private func apply(_ snapshot: RimeSnapshot, client: (any IMKTextInput)?) {
         if let commit = snapshot.commit, !commit.isEmpty {
             client?.insertText(commit, replacementRange: Self.notFoundRange)
-            if !IsSecureEventInputEnabled(), let sentence = sentenceBuffer.append(commit) {
-                latestTranslation = nil
-                coordinator.submit(sentence)
+            if !IsSecureEventInputEnabled() {
+                sentenceBuffer.append(commit)
             }
         }
 
@@ -137,48 +149,113 @@ final class LinguaFlowInputController: IMKInputController {
 
         currentCandidates = snapshot.candidates
         currentHighlightedIndex = snapshot.highlightedIndex
+        updateTranslationDraftAndPanel(client: client)
+    }
 
-        let translationState: PreviewPanelController.TranslationState
-        if let latestTranslation {
-            translationState = .result(latestTranslation.translatedText)
-        } else if sentenceBuffer.currentSnapshot != nil {
-            translationState = .loading
+    private func updateTranslationDraftAndPanel(client: (any IMKTextInput)?) {
+        let provisionalCandidate: String?
+        if !currentPreedit.isEmpty, currentCandidates.indices.contains(currentHighlightedIndex) {
+            provisionalCandidate = currentCandidates[currentHighlightedIndex].text
         } else {
-            translationState = .hidden
+            provisionalCandidate = nil
         }
+
+        let sourceText = LiveTranslationDraft.sourceText(
+            committed: sentenceBuffer.currentSnapshot,
+            provisionalCandidate: provisionalCandidate
+        )
+
+        if sourceText != translationSourceText {
+            translationSourceText = sourceText
+            latestTranslation = nil
+
+            if let sourceText {
+                translationRevision &+= 1
+                translationState = .loading
+                coordinator.submit(
+                    SentenceSnapshot(
+                        text: sourceText,
+                        revision: translationRevision,
+                        isFinal: false
+                    )
+                )
+            } else {
+                translationState = .hidden
+                coordinator.cancel()
+            }
+        }
+
+        renderPanel(client: client)
+    }
+
+    private func renderPanel(client: (any IMKTextInput)?) {
         panelController.update(
+            owner: self,
+            preedit: currentPreedit,
+            sourceText: translationSourceText,
             candidates: currentCandidates,
             highlightedIndex: currentHighlightedIndex,
             translation: translationState
         )
 
-        if !snapshot.candidates.isEmpty || translationState != .hidden {
+        if !currentPreedit.isEmpty || !currentCandidates.isEmpty || translationState != .hidden {
             showPanel(client: client)
         } else {
-            panelController.hide()
+            panelController.hide(owner: self)
         }
-    }
-
-    private func refreshPanel(translation: PreviewPanelController.TranslationState) {
-        panelController.update(
-            candidates: currentCandidates,
-            highlightedIndex: currentHighlightedIndex,
-            translation: translation
-        )
-        showPanel(client: activeClient)
     }
 
     private func showPanel(client: (any IMKTextInput)?) {
         guard let client else { return }
-        var actualRange = NSRange(location: NSNotFound, length: 0)
-        let anchorRange = client.selectedRange().location == NSNotFound
-            ? NSRange(location: 0, length: 0)
-            : client.selectedRange()
-        let anchor = client.firstRect(
-            forCharacterRange: anchorRange,
-            actualRange: &actualRange
+        guard let lastValidAnchor else {
+            panelController.hide(owner: self)
+            return
+        }
+        panelController.show(
+            owner: self,
+            near: lastValidAnchor,
+            clientWindowLevel: client.windowLevel()
         )
-        panelController.show(near: anchor, clientWindowLevel: client.windowLevel())
+    }
+
+    private func captureCaretAnchor(client: (any IMKTextInput)?) {
+        guard let client else { return }
+
+        let markedRange = client.markedRange()
+        let selectedRange = client.selectedRange()
+        let preferredRanges = currentPreedit.isEmpty
+            ? [selectedRange, markedRange]
+            : [markedRange, selectedRange]
+        for range in preferredRanges where range.location != NSNotFound {
+            let endLocation = range.location.addingReportingOverflow(range.length)
+            guard !endLocation.overflow else { continue }
+
+            var actualRange = NSRange(location: NSNotFound, length: 0)
+            let rect = client.firstRect(
+                forCharacterRange: NSRange(location: endLocation.partialValue, length: 0),
+                actualRange: &actualRange
+            )
+            guard isUsableAnchor(rect) else { continue }
+            lastValidAnchor = rect
+            return
+        }
+    }
+
+    private func isUsableAnchor(_ rect: NSRect) -> Bool {
+        guard
+            rect.origin.x.isFinite,
+            rect.origin.y.isFinite,
+            rect.size.width.isFinite,
+            rect.size.height.isFinite,
+            rect.size.height > 0
+        else {
+            return false
+        }
+
+        let point = rect.origin
+        return NSScreen.screens.contains { screen in
+            screen.frame.insetBy(dx: -1, dy: -1).contains(point)
+        }
     }
 
     private func clearDocumentContext() {
@@ -187,12 +264,16 @@ final class LinguaFlowInputController: IMKInputController {
         currentCandidates = []
         currentHighlightedIndex = 0
         clearTranslationContext()
-        panelController.hide()
+        panelController.hide(owner: self)
+        lastValidAnchor = nil
     }
 
     private func clearTranslationContext() {
         sentenceBuffer.reset()
         latestTranslation = nil
+        translationRevision &+= 1
+        translationSourceText = nil
+        translationState = .hidden
         coordinator.cancel()
     }
 

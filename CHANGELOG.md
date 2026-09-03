@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reworked the typing UI into one compact panel with visible pinyin, horizontal candidates, and live English before commit.
+- Fixed candidate panel ownership and caret anchoring so stale panels do not remain at screen corners or flash across input sessions.
 - Fixed the setup helper's Done button so it closes the window and exits the helper.
 - Created the native macOS InputMethodKit application bundle.
 - Added Simplified Chinese full-pinyin input through `librime`.
