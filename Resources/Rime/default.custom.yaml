@@ -1,0 +1,6 @@
+# Keep the upstream defaults, but expose only LinguaFlow's initial Simplified
+# Chinese full-pinyin schema in the input-source menu.
+patch:
+  schema_list:
+    - schema: luna_pinyin_simp
+  menu/page_size: 5
