@@ -27,7 +27,7 @@ LinguaFlow 是一组面向 macOS 的本地优先双语输入源：`LinguaFlow �
 
 当前测试包尚未使用 Apple Developer ID 签名和公证。如果 macOS 拦截从 GitHub 下载的安装包，请先尝试打开一次，再前往“系统设置 → 隐私与安全性”选择“仍要打开”。正式签名和公证完成后将不再需要这个额外步骤。
 
-安装完成后可以直接从菜单栏切换两套输入法。如果 macOS 的输入源列表没有立即刷新，请注销并重新登录。第一次使用翻译前，从输入法菜单选择“准备本地中英翻译…”，在随附的设置助手中允许 Apple 下载中文和英语模型。
+安装完成后可以直接从菜单栏切换两套输入法。两套输入源已由安装器启用，因此 macOS 的“添加输入法”搜索页可能不再重复显示它们；请在“当前已启用的输入源”列表或菜单栏中查找。如果列表没有立即刷新，请先关闭并重新打开系统设置，仍未出现时注销并重新登录。第一次使用翻译前，从输入法菜单选择“准备本地中英翻译…”，在随附的设置助手中允许 Apple 下载中文和英语模型。
 
 完整的安装、迁移和开发者签名说明见 [docs/INSTALL.md](docs/INSTALL.md)。
 
@@ -60,6 +60,8 @@ swift run linguaflow-rime-checks "$shared_dir" "$user_data_dir"
 swift run linguaflow-translation-checks
 ./scripts/build-app.sh release
 ./scripts/build-installer.sh release
+# 安装刚生成的 .pkg 后再运行：
+./scripts/check-installed-input-sources.swift
 ```
 
 `linguaflow-translation-checks` 在模型尚未下载时会以退出码 2 返回；这是环境状态，不是构建失败。

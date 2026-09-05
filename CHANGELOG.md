@@ -5,6 +5,7 @@
 ## 0.2.2 - 2026-09-05
 
 - Fixed upgrades from 0.2.0 when macOS Installer had left a root-owned English input method in the user's `~/Library/Input Methods` directory. The installer now changes ownership only on that exact validated top-level 0.2.0 bundle, then migrates it through the normal logged-in-user path before registering the system copy.
+- Fixed an installation false success where a delayed LaunchServices unregister notification could remove the newly registered same-ID input source. Registration now uses exact bundle/source IDs, authoritative Bundle paths, bounded retries, and fresh-process enabled/selectable verification.
 
 ## 0.2.1 - 2026-09-05
 

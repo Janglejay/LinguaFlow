@@ -42,17 +42,6 @@ run_as_console_user() {
     /usr/bin/sudo -H -u "$console_user" "$@"
 }
 
-unregister_bundle() {
-  local bundle=$1
-
-  if [[ ! -x "$lsregister" ]]; then
-    return 0
-  fi
-  # lsregister returns 1 when the path was never registered. Moving the exact
-  # matching bundle to a disabled suffix is the authoritative cleanup step.
-  run_as_console_user "$lsregister" -u "$bundle" >/dev/null 2>&1 || true
-}
-
 bundle_identifier() {
   local bundle=$1
   /usr/libexec/PlistBuddy \
@@ -227,7 +216,6 @@ neutralize_registered_backup() {
   actual_identifier=$(bundle_identifier "$bundle" || true)
   [[ "$actual_identifier" == "$expected_identifier" ]] || return 0
 
-  unregister_bundle "$bundle" || return 1
   if [[ -e "$disabled_bundle" || -L "$disabled_bundle" ]]; then
     disabled_bundle="$bundle.disabled-$backup_stamp"
   fi
@@ -279,11 +267,6 @@ migrate_legacy_bundle() {
   local backup_name="${bundle_name%.app}.app.disabled"
 
   if [[ ! -e "$legacy_bundle" && ! -L "$legacy_bundle" ]]; then
-    # lsregister returns a failure status when there is no matching record, so
-    # clearing an already-missing 0.2.0 path is intentionally best effort.
-    if [[ -x "$lsregister" ]]; then
-      run_as_console_user "$lsregister" -u "$legacy_bundle" >/dev/null 2>&1 || true
-    fi
     return 0
   fi
 
@@ -296,7 +279,6 @@ migrate_legacy_bundle() {
   actual_identifier=$(bundle_identifier "$legacy_bundle" || true)
   [[ "$actual_identifier" == "$expected_identifier" ]] || return 0
 
-  unregister_bundle "$legacy_bundle" || return 1
   if ! move_validated_legacy_bundle \
     "$legacy_bundle" "$new_backup_root/$backup_name"; then
     echo "Could not move legacy $bundle_name; the installation cannot continue safely." >&2
@@ -314,21 +296,55 @@ if [[ -x "$lsregister" ]]; then
   run_as_console_user "$lsregister" -f "$english_app" >/dev/null 2>&1 || true
 fi
 
-register_and_enable() {
+# Let any asynchronous LaunchServices notifications from moving a legacy bundle
+# settle before publishing the replacement with the same input-source ID. An
+# explicit unregister of the old path is deliberately avoided: on recent macOS
+# that notification can arrive late and remove the newly registered same-ID
+# source from the current login session.
+/bin/sleep 1
+
+install_and_verify() {
   local binary=$1
   local display_name=$2
+  local attempt
 
-  if ! run_as_console_user "$binary" --register-input-source; then
-    echo "Could not register $display_name automatically; it can still be added in Keyboard Settings." >&2
-    return
-  fi
+  for attempt in 1 2 3; do
+    if run_as_console_user "$binary" --install-input-source; then
+      /bin/sleep 1
+      if run_as_console_user "$binary" --verify-input-source; then
+        return 0
+      fi
+    fi
+    echo "$display_name registration attempt $attempt did not persist; retrying." >&2
+    /bin/sleep 1
+  done
 
-  if ! run_as_console_user "$binary" --enable-input-source; then
-    echo "$display_name was registered but macOS did not enable it automatically." >&2
-  fi
+  echo "Could not verify $display_name in the current login session; log out and back in once." >&2
+  return 1
 }
 
-register_and_enable "$chinese_binary" "LinguaFlow 中文"
-register_and_enable "$english_binary" "LinguaFlow English"
+install_and_verify "$chinese_binary" "LinguaFlow 中文" || true
+install_and_verify "$english_binary" "LinguaFlow English" || true
 
+# A second fresh-process check catches the former false-success case where TIS
+# returned noErr and a delayed stale-path notification removed the source after
+# the helper exited.
+/bin/sleep 1
+if ! run_as_console_user "$chinese_binary" --verify-input-source; then
+  install_and_verify "$chinese_binary" "LinguaFlow 中文" || true
+fi
+if ! run_as_console_user "$english_binary" --verify-input-source; then
+  install_and_verify "$english_binary" "LinguaFlow English" || true
+fi
+
+registration_failed=0
+run_as_console_user "$chinese_binary" --verify-input-source || registration_failed=1
+run_as_console_user "$english_binary" --verify-input-source || registration_failed=1
+if [[ "$registration_failed" -ne 0 ]]; then
+  echo "LinguaFlow files were installed, but macOS deferred one or more input sources until the next login." >&2
+fi
+
+# Input-source state belongs to the current graphical login session. The fixed
+# payload remains a valid installation if macOS defers that recoverable session
+# refresh until the next login, so do not turn it into a partial-package error.
 exit 0

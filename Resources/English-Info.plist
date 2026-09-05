@@ -19,7 +19,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.2.2</string>
     <key>CFBundleVersion</key>
-    <string>6</string>
+    <string>7</string>
     <key>InputMethodConnectionName</key>
     <string>com.fufangjie.inputmethod.LinguaFlowEnglish_Connection</string>
     <key>InputMethodServerControllerClass</key>

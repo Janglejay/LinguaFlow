@@ -11,11 +11,11 @@
 
 安装包会把两套输入法固定到上述系统目录，并在构建时拒绝任何可重定位的输入法 Bundle。这样即使机器上曾安装过用户目录版本，macOS Installer 也不会把新文件静默重定位回旧路径。
 
-安装脚本使用公开的 Text Input Source API 为当前桌面用户注册并启用两套输入法，不直接改写 macOS 的偏好设置数据库。如果发现早期版本留在 `~/Library/Input Methods` 的同标识输入法，安装器会在新版落盘后注销并迁移精确匹配的旧 `.app`，同时改用 `.app.disabled` 后缀，避免用户域旧版或备份继续被 LaunchServices 当作输入法发现；不会删除其他输入法。旧副本会移到 `~/Library/Application Support/LinguaFlow/Input Method Backups/`。如果 0.2.0 曾错误地留下 `root` 所有的用户目录副本，安装器会额外验证固定路径、非符号链接、版本、构建号、可执行文件和 Bundle ID，只改变该 Bundle 顶层目录的所有权，不递归修改内容，再以当前登录用户身份完成迁移。0.2.0 创建的旧备份也会按相同规则注销并禁用。
+安装脚本使用公开的 Text Input Source API 为当前桌面用户注册并启用两套输入法，不直接改写 macOS 的偏好设置数据库。如果发现早期版本留在 `~/Library/Input Methods` 的同标识输入法，安装器会在新版落盘后迁移精确匹配的旧 `.app`，同时改用 `.app.disabled` 后缀，避免用户域旧版或备份继续被 LaunchServices 当作输入法发现；不会删除其他输入法。旧副本会移到 `~/Library/Application Support/LinguaFlow/Input Method Backups/`。迁移时不会主动注销同标识旧路径，避免 macOS 延迟处理注销通知时误删刚注册的系统副本；随后会强制注册系统路径并连续验证实际状态。如果 0.2.0 曾错误地留下 `root` 所有的用户目录副本，安装器会额外验证固定路径、非符号链接、版本、构建号、可执行文件和 Bundle ID，只改变该 Bundle 顶层目录的所有权，不递归修改内容，再以当前登录用户身份完成迁移。0.2.0 创建的旧备份也会按相同规则迁移并禁用。
 
 安装器只迁移当前登录账户中的早期副本；同一台 Mac 的其他账户如果曾安装开发版，需要登录对应账户后再次运行安装器，或手动移走该账户 `~/Library/Input Methods/` 下的旧副本。
 
-如果系统的输入源缓存没有立即刷新，请注销并重新登录；也可前往“系统设置 → 键盘 → 文本输入 → 编辑”手动添加。其他 macOS 用户首次使用时也需要在自己的账户中添加输入源。
+安装器成功启用输入源后，macOS 的“添加输入法”搜索页可能不再重复显示它们；请返回“系统设置 → 键盘 → 文本输入 → 编辑”的当前已启用列表，或直接查看菜单栏输入法菜单。如果列表没有立即刷新，请先关闭并重新打开系统设置，仍未出现时注销并重新登录。其他 macOS 用户首次使用时也需要在自己的账户中添加输入源。
 
 第一次使用翻译前，从 LinguaFlow 输入法菜单选择“准备本地中英翻译…”，按提示允许 Apple 下载设备端中英翻译模型。
 
@@ -31,6 +31,12 @@ brew install librime
 ```
 
 产物写入 `.build/dist/`。
+
+安装后可用以下独立检查确认两套输入源均已启用、可选择，并且 LaunchServices 指向系统目录中的正式副本：
+
+```bash
+./scripts/check-installed-input-sources.swift
+```
 
 无证书时会生成适合本机测试的未签名 `.pkg`，应用包采用 ad-hoc 签名。用于 GitHub Release 等公开下载时，需要 Apple Developer Program 的 `Developer ID Application` 与 `Developer ID Installer` 证书，并完成公证：
 
