@@ -19,7 +19,7 @@ The Apple Silicon installer currently embeds the following unmodified libraries 
 | glog | 0.7.1 | BSD 3-Clause |
 | LevelDB | 1.23 | BSD 3-Clause |
 | marisa-trie | 0.3.1 | BSD 2-Clause or LGPL 2.1+ |
-| OpenCC | 1.4.2 | Apache 2.0 |
+| OpenCC (library and selected conversion data) | 1.4.2 | Apache 2.0 |
 | Snappy | 1.2.2 | BSD 3-Clause |
 | yaml-cpp | 0.9.0 | MIT |
 

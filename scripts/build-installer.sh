@@ -14,7 +14,7 @@ resources_source="$project_dir/installer/Resources"
 package_scripts="$project_dir/installer/scripts"
 dist_dir="$project_dir/.build/dist"
 
-for tool in pkgbuild productbuild pkgutil otool codesign lipo; do
+for tool in pkgbuild productbuild pkgutil otool codesign lipo xmllint; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Missing required developer tool: $tool" >&2
     exit 69
@@ -41,14 +41,18 @@ else
   exit 64
 fi
 
-output_package="$dist_dir/LinguaFlow-${package_version}-macOS-${architecture}${signature_suffix}.pkg"
+package_filename="LinguaFlow-${package_version}-macOS-${architecture}${signature_suffix}.pkg"
+output_package="$dist_dir/$package_filename"
 
 mkdir -p "$project_dir/.build" "$dist_dir"
 work_dir=$(/usr/bin/mktemp -d "$project_dir/.build/installer.XXXXXX")
+staged_package="$work_dir/$package_filename"
 cleanup() {
   /bin/rm -rf "$work_dir"
 }
 trap cleanup EXIT
+
+/bin/rm -f "$output_package" "$output_package.sha256"
 
 CODE_SIGN_IDENTITY="$app_sign_identity" \
   "$project_dir/scripts/build-app.sh" "$configuration" >/dev/null
@@ -129,9 +133,66 @@ verify_self_contained_bundle() {
 verify_self_contained_bundle "$payload_input_methods/LinguaFlow.app"
 verify_self_contained_bundle "$payload_input_methods/LinguaFlowEnglish.app"
 
+for opencc_resource in \
+  t2s.json \
+  t2hk.json \
+  t2tw.json \
+  CJK_Compatibility_Ideographs.ocd2 \
+  TSPhrases.ocd2 \
+  TSCharactersExt.ocd2 \
+  TSCharacters.ocd2 \
+  HKVariantsPhrases.ocd2 \
+  HKVariants.ocd2 \
+  TWVariantsPhrases.ocd2 \
+  TWVariants.ocd2; do
+  if [[ ! -r "$payload_input_methods/LinguaFlow.app/Contents/Resources/Rime/opencc/$opencc_resource" ]]; then
+    echo "Chinese input method is missing OpenCC data: $opencc_resource" >&2
+    exit 65
+  fi
+done
+
+component_plist="$work_dir/components.plist"
+pkgbuild --analyze --root "$payload_root" "$component_plist" >/dev/null
+
+# pkgbuild otherwise treats bundles as relocatable and may silently reinstall an
+# input method at a previously registered user-domain path. Keep both products
+# pinned to /Library/Input Methods so the payload and postinstall agree.
+chinese_component_count=0
+english_component_count=0
+component_index=0
+while component_path=$(/usr/libexec/PlistBuddy \
+  -c "Print :$component_index:RootRelativeBundlePath" \
+  "$component_plist" 2>/dev/null); do
+  case "$component_path" in
+    "Library/Input Methods/LinguaFlow.app")
+      /usr/libexec/PlistBuddy \
+        -c "Set :$component_index:BundleIsRelocatable false" \
+        "$component_plist"
+      ((chinese_component_count += 1))
+      ;;
+    "Library/Input Methods/LinguaFlowEnglish.app")
+      /usr/libexec/PlistBuddy \
+        -c "Set :$component_index:BundleIsRelocatable false" \
+        "$component_plist"
+      ((english_component_count += 1))
+      ;;
+    *)
+      echo "Unexpected top-level bundle in installer payload: $component_path" >&2
+      exit 65
+      ;;
+  esac
+  ((component_index += 1))
+done
+
+if [[ "$chinese_component_count" -ne 1 || "$english_component_count" -ne 1 ]]; then
+  echo "Expected exactly one component for each input-method bundle." >&2
+  exit 65
+fi
+
 component_package="$work_dir/LinguaFlow-input-methods.pkg"
 pkgbuild \
   --root "$payload_root" \
+  --component-plist "$component_plist" \
   --identifier com.fufangjie.pkg.LinguaFlow.input-methods \
   --version "$full_version" \
   --install-location / \
@@ -155,7 +216,6 @@ product_resources="$work_dir/Resources"
   /bin/cat "$project_dir/THIRD_PARTY_NOTICES.md"
 } > "$product_resources/License.txt"
 
-/bin/rm -f "$output_package"
 productbuild_arguments=(
   --distribution "$distribution_file"
   --resources "$product_resources"
@@ -164,28 +224,74 @@ productbuild_arguments=(
 if [[ -n "$installer_sign_identity" ]]; then
   productbuild_arguments+=(--sign "$installer_sign_identity")
 fi
-productbuild "${productbuild_arguments[@]}" "$output_package" >/dev/null
+productbuild "${productbuild_arguments[@]}" "$staged_package" >/dev/null
 
-(
-  cd "$dist_dir"
-  /usr/bin/shasum -a 256 "${output_package:t}"
-) > "$output_package.sha256"
-
-pkgutil --expand "$output_package" "$work_dir/expanded" >/dev/null
+pkgutil --expand "$staged_package" "$work_dir/expanded" >/dev/null
 test -f "$work_dir/expanded/Distribution"
 test -f "$work_dir/expanded/LinguaFlow-input-methods.pkg/Payload"
 test -f "$work_dir/expanded/LinguaFlow-input-methods.pkg/Scripts/postinstall"
+
+package_info="$work_dir/expanded/LinguaFlow-input-methods.pkg/PackageInfo"
+package_relocatable=$(/usr/bin/xmllint \
+  --xpath 'string(/pkg-info/@relocatable)' "$package_info")
+if [[ "$package_relocatable" != false ]]; then
+  echo "Installer component must be marked non-relocatable." >&2
+  exit 65
+fi
+
+relocatable_bundle_count=$(/usr/bin/xmllint \
+  --xpath 'count(/pkg-info/relocate/bundle)' "$package_info")
+if [[ "$relocatable_bundle_count" != 0 ]]; then
+  echo "Installer unexpectedly contains relocatable bundles." >&2
+  exit 65
+fi
+
+for expected_bundle_path in \
+  './Library/Input Methods/LinguaFlow.app' \
+  './Library/Input Methods/LinguaFlowEnglish.app'; do
+  packaged_bundle_count=$(/usr/bin/xmllint \
+    --xpath "count(/pkg-info/bundle[@path='$expected_bundle_path'])" \
+    "$package_info")
+  if [[ "$packaged_bundle_count" != 1 ]]; then
+    echo "Installer is missing its fixed bundle path: $expected_bundle_path" >&2
+    exit 65
+  fi
+done
+
+for expected_bundle_identifier in \
+  com.fufangjie.inputmethod.LinguaFlow \
+  com.fufangjie.inputmethod.LinguaFlowEnglish; do
+  upgrade_bundle_count=$(/usr/bin/xmllint \
+    --xpath "count(/pkg-info/upgrade-bundle/bundle[@id='$expected_bundle_identifier'])" \
+    "$package_info")
+  if [[ "$upgrade_bundle_count" != 1 ]]; then
+    echo "Installer is missing upgrade metadata for: $expected_bundle_identifier" >&2
+    exit 65
+  fi
+done
 
 if [[ -n "$notarytool_profile" ]]; then
   if [[ -z "$installer_sign_identity" || "$app_sign_identity" == "-" ]]; then
     echo "Notarization requires CODE_SIGN_IDENTITY and INSTALLER_SIGN_IDENTITY." >&2
     exit 64
   fi
-  /usr/bin/xcrun notarytool submit "$output_package" \
+  /usr/bin/xcrun notarytool submit "$staged_package" \
     --keychain-profile "$notarytool_profile" --wait
-  /usr/bin/xcrun stapler staple "$output_package"
-  /usr/bin/xcrun stapler validate "$output_package"
+  /usr/bin/xcrun stapler staple "$staged_package"
+  /usr/bin/xcrun stapler validate "$staged_package"
 fi
+
+(
+  cd "$work_dir"
+  /usr/bin/shasum -a 256 "$package_filename"
+) > "$staged_package.sha256"
+
+/bin/mv "$staged_package.sha256" "$output_package.sha256"
+/bin/mv "$staged_package" "$output_package"
+(
+  cd "$dist_dir"
+  /usr/bin/shasum -a 256 -c "${package_filename}.sha256" >/dev/null
+)
 
 echo "$output_package"
 echo "$output_package.sha256"

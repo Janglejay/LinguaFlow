@@ -7,9 +7,13 @@
 - `LinguaFlow 中文`
 - `LinguaFlow English`
 
-两套应用均已内嵌 Rime 及其运行时依赖。最终用户不需要安装 Homebrew 或 librime。
+两套应用均已内嵌 Rime 及其运行时依赖；中文输入法还随包携带其简体、香港与台湾字形转换所需的 OpenCC 配置和字典。最终用户不需要安装 Homebrew、librime 或 OpenCC。
 
-安装脚本使用公开的 Text Input Source API 为当前桌面用户注册并启用两套输入法，不直接改写 macOS 的偏好设置数据库。如果发现早期版本留在 `~/Library/Input Methods` 的同标识输入法，安装器只会把精确匹配的两个旧 `.app` 移到 `~/Library/Application Support/LinguaFlow/Legacy Input Methods Backup/`，避免用户域旧版遮蔽新版；不会删除其他输入法。需要时可从该目录恢复。
+安装包会把两套输入法固定到上述系统目录，并在构建时拒绝任何可重定位的输入法 Bundle。这样即使机器上曾安装过用户目录版本，macOS Installer 也不会把新文件静默重定位回旧路径。
+
+安装脚本使用公开的 Text Input Source API 为当前桌面用户注册并启用两套输入法，不直接改写 macOS 的偏好设置数据库。如果发现早期版本留在 `~/Library/Input Methods` 的同标识输入法，安装器会在新版落盘后，以当前登录用户身份注销并把精确匹配的两个旧 `.app` 移到 `~/Library/Application Support/LinguaFlow/Input Method Backups/`，同时改用 `.app.disabled` 后缀，避免用户域旧版或备份继续被 LaunchServices 当作输入法发现；不会删除其他输入法。需要恢复时，可退出 LinguaFlow 后把对应目录移回 `~/Library/Input Methods/` 并恢复 `.app` 后缀。0.2.0 创建的旧备份也会按相同规则注销并禁用。
+
+安装器只迁移当前登录账户中的早期副本；同一台 Mac 的其他账户如果曾安装开发版，需要登录对应账户后再次运行安装器，或手动移走该账户 `~/Library/Input Methods/` 下的旧副本。
 
 如果系统的输入源缓存没有立即刷新，请注销并重新登录；也可前往“系统设置 → 键盘 → 文本输入 → 编辑”手动添加。其他 macOS 用户首次使用时也需要在自己的账户中添加输入源。
 

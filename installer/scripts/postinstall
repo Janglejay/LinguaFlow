@@ -29,10 +29,143 @@ if [[ -z "$console_uid" ]]; then
   exit 0
 fi
 
+user_home=$(/usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null \
+  | /usr/bin/awk '{ $1=""; sub(/^ /, ""); print }')
+if [[ -z "$user_home" ]]; then
+  echo "Could not resolve the logged-in user's home directory." >&2
+  exit 1
+fi
+
 run_as_console_user() {
   /bin/launchctl asuser "$console_uid" \
     /usr/bin/sudo -H -u "$console_user" "$@"
 }
+
+unregister_bundle() {
+  local bundle=$1
+
+  if [[ ! -x "$lsregister" ]]; then
+    return 0
+  fi
+  # lsregister returns 1 when the path was never registered. Moving the exact
+  # matching bundle to a disabled suffix is the authoritative cleanup step.
+  run_as_console_user "$lsregister" -u "$bundle" >/dev/null 2>&1 || true
+}
+
+bundle_identifier() {
+  local bundle=$1
+  /usr/libexec/PlistBuddy \
+    -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist" 2>/dev/null
+}
+
+backup_stamp=$(/bin/date -u '+%Y%m%dT%H%M%SZ')-$$
+legacy_backup_base="$user_home/Library/Application Support/LinguaFlow/Legacy Input Methods Backup"
+new_backup_root="$user_home/Library/Application Support/LinguaFlow/Input Method Backups/$backup_stamp"
+migration_list=
+cleanup() {
+  [[ -z "$migration_list" ]] || /bin/rm -f "$migration_list"
+}
+trap cleanup EXIT
+
+neutralize_registered_backup() {
+  local bundle=$1
+  local expected_identifier=$2
+  local actual_identifier
+  local disabled_bundle="$bundle.disabled"
+
+  [[ -d "$bundle" && ! -L "$bundle" && -f "$bundle/Contents/Info.plist" ]] || return 0
+  actual_identifier=$(bundle_identifier "$bundle" || true)
+  [[ "$actual_identifier" == "$expected_identifier" ]] || return 0
+
+  unregister_bundle "$bundle" || return 1
+  if [[ -e "$disabled_bundle" || -L "$disabled_bundle" ]]; then
+    disabled_bundle="$bundle.disabled-$backup_stamp"
+  fi
+  if ! run_as_console_user /bin/mv "$bundle" "$disabled_bundle"; then
+    echo "Could not disable registered legacy backup: $bundle" >&2
+    return 1
+  fi
+}
+
+# Version 0.2.0 preserved migrated bundles with an .app suffix, which lets
+# LaunchServices rediscover them. Only exact LinguaFlow bundle IDs are touched.
+if [[ -e "$legacy_backup_base" || -L "$legacy_backup_base" ]]; then
+  if [[ ! -d "$legacy_backup_base" || -L "$legacy_backup_base" ]]; then
+    echo "Legacy LinguaFlow backup location is not a safe directory." >&2
+    exit 1
+  fi
+
+  migration_list=$(/usr/bin/mktemp \
+    /private/tmp/com.fufangjie.LinguaFlow.migration.XXXXXX) || exit 1
+  if ! /usr/bin/find -P "$legacy_backup_base" -type d \
+    \( -name LinguaFlow.app -o -name LinguaFlowEnglish.app \) \
+    -prune -print0 > "$migration_list"; then
+    echo "Could not inspect legacy LinguaFlow backups safely." >&2
+    exit 1
+  fi
+
+  while IFS= read -r -d '' backup_bundle; do
+    case "${backup_bundle:t}" in
+      LinguaFlow.app)
+        expected_identifier=com.fufangjie.inputmethod.LinguaFlow
+        ;;
+      LinguaFlowEnglish.app)
+        expected_identifier=com.fufangjie.inputmethod.LinguaFlowEnglish
+        ;;
+      *)
+        echo "Unexpected legacy backup path: $backup_bundle" >&2
+        exit 1
+        ;;
+    esac
+    neutralize_registered_backup "$backup_bundle" "$expected_identifier" || exit 1
+  done < "$migration_list"
+
+  /bin/rm -f "$migration_list"
+  migration_list=
+fi
+
+migrate_legacy_bundle() {
+  local bundle_name=$1
+  local expected_identifier=$2
+  local legacy_bundle="$user_home/Library/Input Methods/$bundle_name"
+  local actual_identifier
+  local backup_name="${bundle_name%.app}.app.disabled"
+
+  if [[ ! -e "$legacy_bundle" && ! -L "$legacy_bundle" ]]; then
+    # lsregister returns a failure status when there is no matching record, so
+    # clearing an already-missing 0.2.0 path is intentionally best effort.
+    if [[ -x "$lsregister" ]]; then
+      run_as_console_user "$lsregister" -u "$legacy_bundle" >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+
+  if [[ ! -d "$legacy_bundle" || -L "$legacy_bundle" || \
+        ! -f "$legacy_bundle/Contents/Info.plist" ]]; then
+    echo "Legacy input-method path is not a safe application bundle: $legacy_bundle" >&2
+    return 1
+  fi
+
+  actual_identifier=$(bundle_identifier "$legacy_bundle" || true)
+  [[ "$actual_identifier" == "$expected_identifier" ]] || return 0
+
+  if ! run_as_console_user /bin/mkdir -p "$new_backup_root"; then
+    echo "Could not create the LinguaFlow input-method backup directory." >&2
+    return 1
+  fi
+  unregister_bundle "$legacy_bundle" || return 1
+  if ! run_as_console_user /bin/mv \
+    "$legacy_bundle" "$new_backup_root/$backup_name"; then
+    echo "Could not move legacy $bundle_name; the installation cannot continue safely." >&2
+    return 1
+  fi
+  echo "Moved legacy $bundle_name to $new_backup_root"
+}
+
+migrate_legacy_bundle \
+  LinguaFlow.app com.fufangjie.inputmethod.LinguaFlow || exit 1
+migrate_legacy_bundle \
+  LinguaFlowEnglish.app com.fufangjie.inputmethod.LinguaFlowEnglish || exit 1
 
 if [[ -x "$lsregister" ]]; then
   run_as_console_user "$lsregister" -f "$chinese_app" >/dev/null 2>&1 || true

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-09-05
+
+- Fixed the macOS installer so both input methods are always installed together in `/Library/Input Methods` instead of being silently relocated to stale user-domain paths.
+- Added a packaging guard that rejects any future installer containing relocatable input-method bundles.
+- Bundled the OpenCC configurations and dictionaries used by the Simplified Chinese schema so the input method no longer falls back to a build-machine Homebrew path.
+- Expanded the real Rime smoke check to require bundled OpenCC data and verify `ceshi` produces the Simplified Chinese candidate `测试`.
+- After the fixed payload is installed, migrate exact legacy user-domain copies as the logged-in user and store recoverable backups with a disabled suffix so LaunchServices cannot keep launching a stale input-method endpoint.
+- Generate installer checksums only after all validation and optional notarization/stapling steps have completed.
+
 ## 0.2.0 - 2026-09-05
 
 - Added a self-contained Apple Silicon macOS installer that installs and enables both input sources without requiring Homebrew on the destination Mac.
