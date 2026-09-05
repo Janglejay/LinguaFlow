@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-09-05
+
+- Fixed upgrades from 0.2.0 when macOS Installer had left a root-owned English input method in the user's `~/Library/Input Methods` directory. The installer now changes ownership only on that exact validated top-level 0.2.0 bundle, then migrates it through the normal logged-in-user path before registering the system copy.
+
 ## 0.2.1 - 2026-09-05
 
 - Fixed the macOS installer so both input methods are always installed together in `/Library/Input Methods` instead of being silently relocated to stale user-domain paths.

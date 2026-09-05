@@ -24,8 +24,9 @@ if [[ -z "$console_user" || "$console_user" == root || "$console_user" == loginw
 fi
 
 console_uid=$(/usr/bin/id -u "$console_user" 2>/dev/null || true)
-if [[ -z "$console_uid" ]]; then
-  echo "Could not resolve the logged-in user's uid; registration is deferred." >&2
+console_gid=$(/usr/bin/id -g "$console_user" 2>/dev/null || true)
+if [[ -z "$console_uid" || -z "$console_gid" ]]; then
+  echo "Could not resolve the logged-in user's uid or gid; registration is deferred." >&2
   exit 0
 fi
 
@@ -67,6 +68,155 @@ cleanup() {
 }
 trap cleanup EXIT
 
+move_user_owned_bundle() {
+  local bundle=$1
+  local destination=$2
+  local destination_parent="${destination:h}"
+  local source_identity
+  local destination_identity
+  local source_identifier
+  local destination_identifier
+  local source_device
+  local destination_device
+
+  source_identity=$(/usr/bin/stat -f '%d:%i' "$bundle" 2>/dev/null) || return 1
+  source_identifier=$(bundle_identifier "$bundle" || true)
+  [[ -n "$source_identifier" ]] || return 1
+  source_device=${source_identity%%:*}
+  if ! run_as_console_user /bin/mkdir -p "$destination_parent"; then
+    echo "Could not create LinguaFlow backup directory: $destination_parent" >&2
+    return 1
+  fi
+  if [[ ! -d "$destination_parent" || -L "$destination_parent" ]]; then
+    echo "LinguaFlow backup parent is not a safe directory: $destination_parent" >&2
+    return 1
+  fi
+  destination_device=$(/usr/bin/stat -f '%d' "$destination_parent" 2>/dev/null) || return 1
+  if [[ "$source_device" != "$destination_device" ]]; then
+    echo "Refusing a cross-device legacy input-method move: $bundle" >&2
+    return 1
+  fi
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    echo "LinguaFlow backup destination already exists: $destination" >&2
+    return 1
+  fi
+  if ! run_as_console_user /bin/mv -hn "$bundle" "$destination"; then
+    echo "Could not move legacy input method as the logged-in user: $bundle" >&2
+    return 1
+  fi
+  if [[ -e "$bundle" || -L "$bundle" || ! -d "$destination" || -L "$destination" ]]; then
+    echo "Legacy input-method move did not complete: $bundle" >&2
+    return 1
+  fi
+  destination_identity=$(/usr/bin/stat -f '%d:%i' "$destination" 2>/dev/null) || return 1
+  if [[ "$destination_identity" != "$source_identity" ]]; then
+    echo "Legacy input-method identity changed while moving: $bundle" >&2
+    return 1
+  fi
+  destination_identifier=$(bundle_identifier "$destination" || true)
+  if [[ "$destination_identifier" != "$source_identifier" ]]; then
+    echo "Legacy input-method identifier changed while moving: $bundle" >&2
+    return 1
+  fi
+  echo "Moved legacy input method to $destination"
+}
+
+prepare_root_owned_legacy_bundle() {
+  local bundle=$1
+  local expected_identifier
+  local expected_executable
+  local parent_directory
+  local source_identity
+  local updated_identity
+  local source_flags
+  local actual_identifier
+  local actual_version
+  local actual_build
+  local actual_executable
+
+  # Version 0.2.0 could install a root-owned app in the user's Input Methods
+  # directory. Change ownership only on the validated top-level directory, never
+  # recursively, then return to the unprivileged move path.
+  case "$bundle" in
+    "$user_home/Library/Input Methods/LinguaFlow.app")
+      expected_identifier=com.fufangjie.inputmethod.LinguaFlow
+      expected_executable=LinguaFlowIME
+      ;;
+    "$user_home/Library/Input Methods/LinguaFlowEnglish.app")
+      expected_identifier=com.fufangjie.inputmethod.LinguaFlowEnglish
+      expected_executable=LinguaFlowEnglishIME
+      ;;
+    *)
+      echo "Refusing to change ownership outside a fixed legacy path: $bundle" >&2
+      return 1
+      ;;
+  esac
+
+  for parent_directory in \
+    "$user_home" \
+    "$user_home/Library" \
+    "$user_home/Library/Input Methods"; do
+    if [[ ! -d "$parent_directory" || -L "$parent_directory" ]]; then
+      echo "Legacy input-method parent chain is not safe: $parent_directory" >&2
+      return 1
+    fi
+  done
+
+  [[ -d "$bundle" && ! -L "$bundle" && \
+     -f "$bundle/Contents/Info.plist" && \
+     ! -L "$bundle/Contents/Info.plist" ]] || return 1
+  [[ "$(/usr/bin/stat -f '%u' "$bundle" 2>/dev/null)" == 0 ]] || return 1
+  source_flags=$(/usr/bin/stat -f '%f' "$bundle" 2>/dev/null) || return 1
+  if [[ "$source_flags" != 0 ]]; then
+    echo "Root-owned legacy input method has unsupported file flags: $bundle" >&2
+    return 1
+  fi
+
+  actual_identifier=$(bundle_identifier "$bundle" || true)
+  actual_version=$(/usr/libexec/PlistBuddy \
+    -c 'Print :CFBundleShortVersionString' "$bundle/Contents/Info.plist" 2>/dev/null || true)
+  actual_build=$(/usr/libexec/PlistBuddy \
+    -c 'Print :CFBundleVersion' "$bundle/Contents/Info.plist" 2>/dev/null || true)
+  actual_executable=$(/usr/libexec/PlistBuddy \
+    -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist" 2>/dev/null || true)
+  if [[ "$actual_identifier" != "$expected_identifier" || \
+        "$actual_version" != 0.2.0 || "$actual_build" != 4 || \
+        "$actual_executable" != "$expected_executable" ]]; then
+    echo "Root-owned input method is not the known 0.2.0 legacy bundle: $bundle" >&2
+    return 1
+  fi
+
+  source_identity=$(/usr/bin/stat -f '%d:%i' "$bundle" 2>/dev/null) || return 1
+  if ! /usr/sbin/chown -h "$console_uid:$console_gid" "$bundle"; then
+    echo "Could not prepare root-owned legacy input method for migration: $bundle" >&2
+    return 1
+  fi
+  updated_identity=$(/usr/bin/stat -f '%d:%i' "$bundle" 2>/dev/null) || return 1
+  if [[ "$updated_identity" != "$source_identity" || \
+        "$(/usr/bin/stat -f '%u:%g' "$bundle" 2>/dev/null)" != \
+          "$console_uid:$console_gid" ]]; then
+    echo "Legacy input-method ownership change could not be verified: $bundle" >&2
+    return 1
+  fi
+}
+
+move_validated_legacy_bundle() {
+  local bundle=$1
+  local user_destination=$2
+  local owner_uid
+
+  owner_uid=$(/usr/bin/stat -f '%u' "$bundle" 2>/dev/null) || return 1
+  if [[ "$owner_uid" == "$console_uid" ]]; then
+    move_user_owned_bundle "$bundle" "$user_destination"
+  elif [[ "$owner_uid" == 0 ]]; then
+    prepare_root_owned_legacy_bundle "$bundle" || return 1
+    move_user_owned_bundle "$bundle" "$user_destination"
+  else
+    echo "Legacy input method has an unexpected owner ($owner_uid): $bundle" >&2
+    return 1
+  fi
+}
+
 neutralize_registered_backup() {
   local bundle=$1
   local expected_identifier=$2
@@ -81,10 +231,7 @@ neutralize_registered_backup() {
   if [[ -e "$disabled_bundle" || -L "$disabled_bundle" ]]; then
     disabled_bundle="$bundle.disabled-$backup_stamp"
   fi
-  if ! run_as_console_user /bin/mv "$bundle" "$disabled_bundle"; then
-    echo "Could not disable registered legacy backup: $bundle" >&2
-    return 1
-  fi
+  move_validated_legacy_bundle "$bundle" "$disabled_bundle" || return 1
 }
 
 # Version 0.2.0 preserved migrated bundles with an .app suffix, which lets
@@ -149,17 +296,12 @@ migrate_legacy_bundle() {
   actual_identifier=$(bundle_identifier "$legacy_bundle" || true)
   [[ "$actual_identifier" == "$expected_identifier" ]] || return 0
 
-  if ! run_as_console_user /bin/mkdir -p "$new_backup_root"; then
-    echo "Could not create the LinguaFlow input-method backup directory." >&2
-    return 1
-  fi
   unregister_bundle "$legacy_bundle" || return 1
-  if ! run_as_console_user /bin/mv \
+  if ! move_validated_legacy_bundle \
     "$legacy_bundle" "$new_backup_root/$backup_name"; then
     echo "Could not move legacy $bundle_name; the installation cannot continue safely." >&2
     return 1
   fi
-  echo "Moved legacy $bundle_name to $new_backup_root"
 }
 
 migrate_legacy_bundle \
