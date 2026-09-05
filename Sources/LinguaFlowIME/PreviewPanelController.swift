@@ -43,7 +43,9 @@ final class PreviewPanelController {
         sourceText: String?,
         candidates: [RimeCandidate],
         highlightedIndex: Int,
-        translation: TranslationState
+        translation: TranslationState,
+        direction: TranslationDirection,
+        spellingCorrection: EnglishSpellingCorrection?
     ) {
         activeOwner = ObjectIdentifier(owner)
         previewView.update(
@@ -51,7 +53,9 @@ final class PreviewPanelController {
             sourceText: sourceText,
             candidates: Array(candidates.prefix(5)),
             highlightedIndex: highlightedIndex,
-            translation: translation
+            translation: translation,
+            direction: direction,
+            spellingCorrection: spellingCorrection
         )
 
         let size = previewView.preferredSize
@@ -101,6 +105,8 @@ private final class PreviewView: NSView {
     private var candidates: [RimeCandidate] = []
     private var highlightedIndex = 0
     private var translation: PreviewPanelController.TranslationState = .hidden
+    private var direction = TranslationDirection.chineseToEnglish
+    private var spellingCorrection: EnglishSpellingCorrection?
 
     private let regularFont = NSFont.systemFont(ofSize: 14)
     private let labelFont = NSFont.systemFont(ofSize: 11, weight: .medium)
@@ -112,7 +118,7 @@ private final class PreviewView: NSView {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("LinguaFlow 拼音、候选与英文预览")
+        setAccessibilityLabel("LinguaFlow 输入、纠错与翻译预览")
     }
 
     required init?(coder: NSCoder) {
@@ -124,19 +130,25 @@ private final class PreviewView: NSView {
         sourceText: String?,
         candidates: [RimeCandidate],
         highlightedIndex: Int,
-        translation: PreviewPanelController.TranslationState
+        translation: PreviewPanelController.TranslationState,
+        direction: TranslationDirection,
+        spellingCorrection: EnglishSpellingCorrection?
     ) {
         let changed = self.preedit != preedit
             || self.sourceText != sourceText
             || self.candidates != candidates
             || self.highlightedIndex != highlightedIndex
             || self.translation != translation
+            || self.direction != direction
+            || self.spellingCorrection != spellingCorrection
 
         self.preedit = preedit
         self.sourceText = sourceText
         self.candidates = candidates
         self.highlightedIndex = highlightedIndex
         self.translation = translation
+        self.direction = direction
+        self.spellingCorrection = spellingCorrection
         preferredSize = calculateSize()
         frame.size = preferredSize
         if changed {
@@ -163,11 +175,16 @@ private final class PreviewView: NSView {
 
         if !candidates.isEmpty {
             drawCandidates(y: y)
-            y += 30 + UnifiedPanelLayout.rowSpacing
+            y += candidateRowHeight + UnifiedPanelLayout.rowSpacing
+        }
+
+        if let spellingCorrection {
+            drawCorrection(spellingCorrection, y: y)
+            y += 20 + UnifiedPanelLayout.rowSpacing
         }
 
         if translation != .hidden {
-            if headerContent != nil || !candidates.isEmpty {
+            if headerContent != nil || !candidates.isEmpty || spellingCorrection != nil {
                 NSColor.separatorColor.withAlphaComponent(0.7).setStroke()
                 let divider = NSBezierPath()
                 divider.move(to: NSPoint(x: 10, y: y - 2))
@@ -184,7 +201,7 @@ private final class PreviewView: NSView {
             return ("拼音", preedit)
         }
         if let sourceText, !sourceText.isEmpty {
-            return ("中文", sourceText)
+            return (direction.sourceLabel, sourceText)
         }
         return nil
     }
@@ -194,7 +211,7 @@ private final class PreviewView: NSView {
         case .hidden:
             nil
         case .loading:
-            "正在生成英文…"
+            direction == .chineseToEnglish ? "正在生成英文…" : "正在生成中文…"
         case .result(let value), .message(let value):
             value
         }
@@ -210,10 +227,19 @@ private final class PreviewView: NSView {
         }
         if !candidates.isEmpty {
             widths.append(candidateRowWidth)
-            rowHeights.append(30)
+            rowHeights.append(candidateRowHeight)
+        }
+        if let spellingCorrection {
+            widths.append(
+                labeledTextWidth(
+                    label: "纠错",
+                    value: "\(spellingCorrection.original) → \(spellingCorrection.replacement)   Tab 接受"
+                )
+            )
+            rowHeights.append(20)
         }
         if let translationText {
-            widths.append(labeledTextWidth(label: "EN", value: translationText))
+            widths.append(labeledTextWidth(label: direction.targetLabel, value: translationText))
             let provisionalSize = UnifiedPanelLayout.size(
                 contentWidths: widths,
                 rowHeights: rowHeights + [20]
@@ -251,13 +277,17 @@ private final class PreviewView: NSView {
 
     private func drawCandidates(y: CGFloat) {
         var x = UnifiedPanelLayout.horizontalPadding
+        var rowY = y
+        let maximumX = bounds.width - UnifiedPanelLayout.horizontalPadding
         for (index, candidate) in candidates.enumerated() {
-            let title = "\(index + 1) \(candidate.text)"
-            let naturalWidth = textWidth(title, font: regularFont) + 16
-            let remainingWidth = bounds.width - UnifiedPanelLayout.horizontalPadding - x
-            guard remainingWidth >= 30 else { break }
-            let width = min(naturalWidth, remainingWidth)
-            let rect = NSRect(x: x, y: y, width: width, height: 28)
+            let title = candidateTitle(at: index, candidate: candidate)
+            let naturalWidth = candidateWidth(at: index, candidate: candidate)
+            let width = min(naturalWidth, maximumCandidateContentWidth)
+            if x > UnifiedPanelLayout.horizontalPadding, x + width > maximumX {
+                x = UnifiedPanelLayout.horizontalPadding
+                rowY += 28 + UnifiedPanelLayout.rowSpacing
+            }
+            let rect = NSRect(x: x, y: rowY, width: width, height: 28)
 
             if index == highlightedIndex {
                 NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
@@ -278,7 +308,7 @@ private final class PreviewView: NSView {
         guard let translationText else { return }
 
         drawText(
-            "EN",
+            direction.targetLabel,
             in: NSRect(x: 12, y: y + 2, width: 30, height: 18),
             color: .secondaryLabelColor,
             font: labelFont,
@@ -297,8 +327,9 @@ private final class PreviewView: NSView {
         )
 
         if case .result = translation {
+            let targetName = direction == .chineseToEnglish ? "英文" : "中文"
             drawText(
-                "⌃↩ 插入   ⇧⌃↩ 换行插入",
+                "⌃↩ 插入\(targetName)   ⇧⌃↩ 换行插入",
                 in: NSRect(x: 46, y: y + height + 2, width: availableWidth, height: 14),
                 color: .tertiaryLabelColor,
                 font: shortcutFont,
@@ -307,11 +338,69 @@ private final class PreviewView: NSView {
         }
     }
 
+    private func drawCorrection(_ correction: EnglishSpellingCorrection, y: CGFloat) {
+        drawText(
+            "纠错",
+            in: NSRect(x: 12, y: y + 2, width: 30, height: 18),
+            color: .systemOrange,
+            font: labelFont,
+            lineBreakMode: .byClipping
+        )
+        drawText(
+            "\(correction.original) → \(correction.replacement)   Tab 接受",
+            in: NSRect(x: 46, y: y, width: bounds.width - 58, height: 20),
+            color: .labelColor,
+            font: regularFont,
+            lineBreakMode: .byTruncatingTail
+        )
+    }
+
     private var candidateRowWidth: CGFloat {
         let widths = candidates.enumerated().map { index, candidate in
-            textWidth("\(index + 1) \(candidate.text)", font: regularFont) + 16
+            candidateWidth(at: index, candidate: candidate)
         }
         return widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * 6
+    }
+
+    private var candidateRowHeight: CGFloat {
+        var rows = 1
+        var occupiedWidth: CGFloat = 0
+
+        for (index, candidate) in candidates.enumerated() {
+            let width = min(
+                candidateWidth(at: index, candidate: candidate),
+                maximumCandidateContentWidth
+            )
+            let requiredWidth = occupiedWidth == 0 ? width : occupiedWidth + 6 + width
+            if occupiedWidth > 0, requiredWidth > maximumCandidateContentWidth {
+                rows += 1
+                occupiedWidth = width
+            } else {
+                occupiedWidth = requiredWidth
+            }
+        }
+
+        return CGFloat(rows) * 28 + CGFloat(max(0, rows - 1)) * UnifiedPanelLayout.rowSpacing
+    }
+
+    private var maximumCandidateContentWidth: CGFloat {
+        UnifiedPanelLayout.maximumWidth - UnifiedPanelLayout.horizontalPadding * 2
+    }
+
+    private func candidateWidth(at index: Int, candidate: RimeCandidate) -> CGFloat {
+        textWidth(candidateTitle(at: index, candidate: candidate), font: regularFont) + 16
+    }
+
+    private func candidateTitle(at index: Int, candidate: RimeCandidate) -> String {
+        let prefix = "\(index + 1) \(candidate.text)"
+        guard
+            direction == .englishToChinese,
+            let comment = candidate.comment?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !comment.isEmpty
+        else {
+            return prefix
+        }
+        return "\(prefix) · \(comment)"
     }
 
     private func labeledTextWidth(label: String, value: String) -> CGFloat {
@@ -352,11 +441,14 @@ private final class PreviewView: NSView {
     }
 
     private var accessibilityText: String {
-        let candidateText = candidates.map(\.text).joined(separator: "，")
+        let candidateText = candidates.enumerated().map { index, candidate in
+            candidateTitle(at: index, candidate: candidate)
+        }.joined(separator: "，")
         let values = [
             headerContent.map { "\($0.label) \($0.value)" },
             candidateText.isEmpty ? nil : "候选 \(candidateText)",
-            translationText.map { "英文 \($0)" },
+            spellingCorrection.map { "纠错 \($0.original) 改为 \($0.replacement)" },
+            translationText.map { "\(direction.targetLabel) \($0)" },
         ]
         return values.compactMap { $0 }.joined(separator: "。")
     }

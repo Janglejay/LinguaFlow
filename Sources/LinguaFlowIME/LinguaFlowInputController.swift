@@ -7,6 +7,7 @@ import LinguaFlowRime
 @objc(LinguaFlowInputController)
 @MainActor
 final class LinguaFlowInputController: IMKInputController {
+    private let product = InputProduct.current
     private var activeClient: (any IMKTextInput)?
     private var engine: RimeEngine?
     private var currentPreedit = ""
@@ -17,6 +18,16 @@ final class LinguaFlowInputController: IMKInputController {
     private var translationRevision: UInt64 = 0
     private var translationSourceText: String?
     private var translationState: PreviewPanelController.TranslationState = .hidden
+    private var spellingCorrection: EnglishSpellingCorrection?
+    private var spellCheckRevision: UInt64 = 0
+    private var spellCheckTask: Task<Void, Never>?
+    private var expectedEnglishCaretLocation: Int?
+    private let englishSpellChecker = EnglishSpellChecker()
+    private var englishCandidateContext: EnglishCandidateContext?
+    private var candidateMeaningRevision: UInt64 = 0
+    private var candidateMeaningTask: Task<Void, Never>?
+    private var candidateMeaningCache: [String: String] = [:]
+    private var candidateTranslationProvider: OnDeviceTranslationProvider?
     private var lastValidAnchor: NSRect?
     private let panelController = PreviewPanelController.shared
     private var coordinator: TranslationCoordinator!
@@ -24,12 +35,22 @@ final class LinguaFlowInputController: IMKInputController {
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         activeClient = inputClient as? any IMKTextInput
-        engine = try? AppEnvironment.shared.makeEngine()
+        if product.usesRime {
+            engine = try? AppEnvironment.shared.makeEngine()
+        }
 
+        let sentenceTranslationProvider = OnDeviceTranslationProvider(
+            direction: product.translationDirection
+        )
         coordinator = TranslationCoordinator(
-            provider: OnDeviceTranslationProvider(),
+            provider: sentenceTranslationProvider,
             debounce: .milliseconds(400)
         )
+        if product == .english {
+            candidateTranslationProvider = OnDeviceTranslationProvider(
+                direction: .englishToChinese
+            )
+        }
         coordinator.onResult = { [weak self] result in
             guard
                 let self,
@@ -88,18 +109,26 @@ final class LinguaFlowInputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, event.type == .keyDown, let engine else { return false }
+        guard let event, event.type == .keyDown else { return false }
         let client = client(from: sender)
         activeClient = client
         captureCaretAnchor(client: client)
 
-        if IsSecureEventInputEnabled(), translationSourceText != nil {
-            clearTranslationContext()
+        if IsSecureEventInputEnabled() {
+            clearDocumentContext()
+            return false
         }
 
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers.contains(.command) || modifiers.contains(.option) {
+            if product == .english {
+                clearDocumentContext()
+            }
             return false
+        }
+
+        if product == .english {
+            reconcileEnglishCaret(client: client)
         }
 
         if isReturn(event), modifiers.contains(.control), let translation = latestTranslation {
@@ -108,11 +137,19 @@ final class LinguaFlowInputController: IMKInputController {
                 prefix + translation.translatedText,
                 replacementRange: Self.notFoundRange
             )
+            if product == .english {
+                clearDocumentContext()
+            }
             return true
         }
 
-        guard let keyCode = rimeKeyCode(for: event) else { return false }
-        let snapshot = engine.process(keyCode: keyCode, modifiers: rimeModifiers(from: modifiers))
+        if product == .english {
+            return handleEnglish(event, client: client, modifiers: modifiers)
+        }
+
+        guard let engine else { return false }
+        guard let key = rimeKeyMapping(for: event, modifiers: modifiers) else { return false }
+        let snapshot = engine.process(keyCode: key.keyCode, modifiers: key.modifiers)
         apply(snapshot, client: client)
 
         if !snapshot.consumed {
@@ -152,7 +189,10 @@ final class LinguaFlowInputController: IMKInputController {
         updateTranslationDraftAndPanel(client: client)
     }
 
-    private func updateTranslationDraftAndPanel(client: (any IMKTextInput)?) {
+    private func updateTranslationDraftAndPanel(
+        client: (any IMKTextInput)?,
+        refreshEnglishCandidates: Bool = true
+    ) {
         let provisionalCandidate: String?
         if !currentPreedit.isEmpty, currentCandidates.indices.contains(currentHighlightedIndex) {
             provisionalCandidate = currentCandidates[currentHighlightedIndex].text
@@ -160,10 +200,16 @@ final class LinguaFlowInputController: IMKInputController {
             provisionalCandidate = nil
         }
 
-        let sourceText = LiveTranslationDraft.sourceText(
-            committed: sentenceBuffer.currentSnapshot,
-            provisionalCandidate: provisionalCandidate
-        )
+        let sourceText: String?
+        switch product {
+        case .chinese:
+            sourceText = LiveTranslationDraft.sourceText(
+                committed: sentenceBuffer.currentSnapshot,
+                provisionalCandidate: provisionalCandidate
+            )
+        case .english:
+            sourceText = sentenceBuffer.currentSnapshot?.text
+        }
 
         if sourceText != translationSourceText {
             translationSourceText = sourceText
@@ -185,6 +231,13 @@ final class LinguaFlowInputController: IMKInputController {
             }
         }
 
+        if product == .english {
+            if refreshEnglishCandidates {
+                updateEnglishCandidates(for: sourceText)
+            }
+            scheduleSpellingCheck(for: sourceText)
+        }
+
         renderPanel(client: client)
     }
 
@@ -195,7 +248,9 @@ final class LinguaFlowInputController: IMKInputController {
             sourceText: translationSourceText,
             candidates: currentCandidates,
             highlightedIndex: currentHighlightedIndex,
-            translation: translationState
+            translation: translationState,
+            direction: product.translationDirection,
+            spellingCorrection: spellingCorrection
         )
 
         if !currentPreedit.isEmpty || !currentCandidates.isEmpty || translationState != .hidden {
@@ -221,11 +276,18 @@ final class LinguaFlowInputController: IMKInputController {
     private func captureCaretAnchor(client: (any IMKTextInput)?) {
         guard let client else { return }
 
+        var lineHeightRect = NSRect.zero
+        _ = client.attributes(
+            forCharacterIndex: 0,
+            lineHeightRectangle: &lineHeightRect
+        )
+
         let markedRange = client.markedRange()
         let selectedRange = client.selectedRange()
         let preferredRanges = currentPreedit.isEmpty
             ? [selectedRange, markedRange]
             : [markedRange, selectedRange]
+        var candidates = [lineHeightRect]
         for range in preferredRanges where range.location != NSNotFound {
             let endLocation = range.location.addingReportingOverflow(range.length)
             guard !endLocation.overflow else { continue }
@@ -235,26 +297,14 @@ final class LinguaFlowInputController: IMKInputController {
                 forCharacterRange: NSRange(location: endLocation.partialValue, length: 0),
                 actualRange: &actualRange
             )
-            guard isUsableAnchor(rect) else { continue }
-            lastValidAnchor = rect
-            return
-        }
-    }
-
-    private func isUsableAnchor(_ rect: NSRect) -> Bool {
-        guard
-            rect.origin.x.isFinite,
-            rect.origin.y.isFinite,
-            rect.size.width.isFinite,
-            rect.size.height.isFinite,
-            rect.size.height > 0
-        else {
-            return false
+            candidates.append(rect)
         }
 
-        let point = rect.origin
-        return NSScreen.screens.contains { screen in
-            screen.frame.insetBy(dx: -1, dy: -1).contains(point)
+        if let anchor = UnifiedPanelLayout.firstUsableAnchor(
+            candidates: candidates,
+            visibleFrames: NSScreen.screens.map(\.frame)
+        ) {
+            lastValidAnchor = anchor
         }
     }
 
@@ -263,6 +313,8 @@ final class LinguaFlowInputController: IMKInputController {
         currentPreedit = ""
         currentCandidates = []
         currentHighlightedIndex = 0
+        clearEnglishCandidates()
+        candidateMeaningCache.removeAll(keepingCapacity: true)
         clearTranslationContext()
         panelController.hide(owner: self)
         lastValidAnchor = nil
@@ -274,35 +326,344 @@ final class LinguaFlowInputController: IMKInputController {
         translationRevision &+= 1
         translationSourceText = nil
         translationState = .hidden
+        spellingCorrection = nil
+        expectedEnglishCaretLocation = nil
+        spellCheckRevision &+= 1
+        spellCheckTask?.cancel()
+        spellCheckTask = nil
         coordinator.cancel()
+    }
+
+    private func handleEnglish(
+        _ event: NSEvent,
+        client: (any IMKTextInput)?,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        switch EnglishCandidateInteraction.action(
+            keyCode: event.keyCode,
+            characters: event.characters,
+            candidateCount: currentCandidates.count,
+            highlightedIndex: currentHighlightedIndex,
+            hasShift: modifiers.contains(.shift),
+            hasControl: modifiers.contains(.control)
+        ) {
+        case .passThrough:
+            break
+        case .dismiss:
+            clearEnglishCandidates()
+            renderPanel(client: client)
+            return true
+        case .select(let index):
+            if applyEnglishCandidate(at: index, client: client) {
+                return true
+            }
+            clearDocumentContext()
+            return false
+        case .highlight(let index):
+            currentHighlightedIndex = index
+            renderPanel(client: client)
+            return true
+        }
+
+        if event.keyCode == 48, applySpellingCorrection(client: client) {
+            return true
+        }
+        if event.keyCode == 48 {
+            clearDocumentContext()
+            return false
+        }
+
+        if event.keyCode == 51 {
+            let selection = client?.selectedRange()
+            if sentenceBuffer.removeLastCharacter() != nil {
+                updateTranslationDraftAndPanel(client: client)
+            } else {
+                clearDocumentContext()
+            }
+            if let selection, selection.location != NSNotFound, selection.location > 0 {
+                expectedEnglishCaretLocation = selection.location - 1
+            }
+            return false
+        }
+
+        if isNavigationKey(event.keyCode) || event.keyCode == 53 {
+            clearDocumentContext()
+            return false
+        }
+
+        if isReturn(event) {
+            let selection = client?.selectedRange()
+            if sentenceBuffer.append("\n") != nil {
+                updateTranslationDraftAndPanel(client: client)
+            }
+            if let selection, selection.location != NSNotFound {
+                expectedEnglishCaretLocation = selection.location + 1
+            }
+            return false
+        }
+
+        guard !modifiers.contains(.control), let characters = event.characters else {
+            return false
+        }
+        guard
+            !characters.isEmpty,
+            characters.unicodeScalars.allSatisfy({
+                !CharacterSet.controlCharacters.contains($0)
+            })
+        else {
+            return false
+        }
+
+        let selection = client?.selectedRange()
+        if sentenceBuffer.append(characters) != nil {
+            updateTranslationDraftAndPanel(client: client)
+        }
+        if let selection, selection.location != NSNotFound {
+            expectedEnglishCaretLocation = selection.location + characters.utf16.count
+        }
+        return false
+    }
+
+    private func updateEnglishCandidates(for sourceText: String?) {
+        guard
+            let sourceText,
+            let context = EnglishCandidateContext.trailingWord(in: sourceText)
+        else {
+            clearEnglishCandidates()
+            return
+        }
+
+        let words = englishSpellChecker.candidates(for: context.word)
+        guard !words.isEmpty else {
+            clearEnglishCandidates()
+            return
+        }
+
+        if englishCandidateContext == context, currentCandidates.map(\.text) == words {
+            return
+        }
+
+        englishCandidateContext = context
+        currentHighlightedIndex = 0
+        currentCandidates = words.map { word in
+            RimeCandidate(
+                text: word,
+                comment: candidateMeaningCache[word.lowercased()]
+            )
+        }
+        scheduleCandidateMeanings(for: words)
+    }
+
+    private func scheduleCandidateMeanings(for words: [String]) {
+        candidateMeaningRevision &+= 1
+        let revision = candidateMeaningRevision
+        candidateMeaningTask?.cancel()
+
+        let missingWords = words.filter { candidateMeaningCache[$0.lowercased()] == nil }
+        guard !missingWords.isEmpty, let provider = candidateTranslationProvider else {
+            return
+        }
+
+        candidateMeaningTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                let meanings = try await provider.translateCandidates(missingWords)
+                try Task.checkCancellation()
+                guard
+                    let self,
+                    self.candidateMeaningRevision == revision,
+                    self.currentCandidates.map(\.text) == words
+                else {
+                    return
+                }
+
+                for (word, meaning) in meanings {
+                    self.candidateMeaningCache[word] = self.compactCandidateMeaning(meaning)
+                }
+                self.currentCandidates = words.map { word in
+                    RimeCandidate(
+                        text: word,
+                        comment: self.candidateMeaningCache[word.lowercased()]
+                    )
+                }
+                self.renderPanel(client: self.activeClient)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func applyEnglishCandidate(
+        at index: Int,
+        client: (any IMKTextInput)?
+    ) -> Bool {
+        guard
+            let client,
+            currentCandidates.indices.contains(index),
+            let context = englishCandidateContext,
+            let snapshot = sentenceBuffer.currentSnapshot,
+            let hostRange = TrackedTextReplacement.hostRange(
+                trackedText: snapshot.text,
+                trackedUTF16Range: context.range,
+                currentSelection: client.selectedRange()
+            ),
+            client.attributedSubstring(from: hostRange)?.string == context.word
+        else {
+            return false
+        }
+
+        let replacement = currentCandidates[index].text
+        client.insertText(replacement, replacementRange: hostRange)
+        expectedEnglishCaretLocation = hostRange.location + replacement.utf16.count
+        _ = sentenceBuffer.replaceCharacters(inUTF16Range: context.range, with: replacement)
+        spellingCorrection = nil
+        clearEnglishCandidates()
+        updateTranslationDraftAndPanel(
+            client: client,
+            refreshEnglishCandidates: false
+        )
+        return true
+    }
+
+    private func clearEnglishCandidates() {
+        englishCandidateContext = nil
+        if product == .english {
+            currentCandidates = []
+        }
+        currentHighlightedIndex = 0
+        candidateMeaningRevision &+= 1
+        candidateMeaningTask?.cancel()
+        candidateMeaningTask = nil
+    }
+
+    private func compactCandidateMeaning(_ meaning: String) -> String {
+        let compact = meaning
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard compact.count > 16 else { return compact }
+        return String(compact.prefix(16)) + "…"
+    }
+
+    private func reconcileEnglishCaret(client: (any IMKTextInput)?) {
+        guard let expectedEnglishCaretLocation else { return }
+        let selection = client?.selectedRange() ?? Self.notFoundRange
+        guard selection.location == expectedEnglishCaretLocation, selection.length == 0 else {
+            clearDocumentContext()
+            return
+        }
+    }
+
+    private func scheduleSpellingCheck(for sourceText: String?) {
+        spellCheckRevision &+= 1
+        let revision = spellCheckRevision
+        spellCheckTask?.cancel()
+
+        guard let sourceText, sourceText.rangeOfCharacter(from: .letters) != nil else {
+            spellingCorrection = nil
+            return
+        }
+
+        spellCheckTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(400))
+                guard let self, self.spellCheckRevision == revision else { return }
+                self.spellingCorrection = self.englishSpellChecker.firstCorrection(in: sourceText)
+                self.renderPanel(client: self.activeClient)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func applySpellingCorrection(client: (any IMKTextInput)?) -> Bool {
+        guard
+            let client,
+            let correction = spellingCorrection,
+            let snapshot = sentenceBuffer.currentSnapshot
+        else {
+            return false
+        }
+
+        let textLength = snapshot.text.utf16.count
+        let correctionEnd = NSMaxRange(correction.range)
+        guard correctionEnd <= textLength else { return false }
+
+        let suffixRange = NSRange(
+            location: correction.range.location,
+            length: textLength - correction.range.location
+        )
+        guard
+            let suffixStringRange = Range(suffixRange, in: snapshot.text),
+            let correctionStringRange = Range(correction.range, in: snapshot.text),
+            let hostRange = TrackedTextReplacement.hostRange(
+                trackedText: snapshot.text,
+                trackedUTF16Range: suffixRange,
+                currentSelection: client.selectedRange()
+            )
+        else {
+            return false
+        }
+
+        let suffix = snapshot.text[suffixStringRange]
+        let original = snapshot.text[correctionStringRange]
+        guard suffix.hasPrefix(original) else { return false }
+        guard client.attributedSubstring(from: hostRange)?.string == String(suffix) else {
+            clearDocumentContext()
+            return false
+        }
+        let trailingText = suffix.dropFirst(original.count)
+        let replacement = correction.replacement + trailingText
+
+        client.insertText(replacement, replacementRange: hostRange)
+        expectedEnglishCaretLocation = hostRange.location + replacement.utf16.count
+        _ = sentenceBuffer.replaceCharacters(inUTF16Range: suffixRange, with: replacement)
+        spellingCorrection = nil
+        updateTranslationDraftAndPanel(client: client)
+        return true
     }
 
     private func client(from sender: Any?) -> (any IMKTextInput)? {
         (sender as? any IMKTextInput) ?? activeClient
     }
 
-    private func rimeKeyCode(for event: NSEvent) -> Int32? {
+    private func rimeKeyMapping(
+        for event: NSEvent,
+        modifiers: NSEvent.ModifierFlags
+    ) -> RimeKeyMapping? {
+        let specialKey: Int32?
         switch event.keyCode {
-        case 36, 76: return RimeKey.return
-        case 51: return RimeKey.backspace
-        case 53: return RimeKey.escape
-        case 115: return RimeKey.home
-        case 116: return RimeKey.pageUp
-        case 119: return RimeKey.end
-        case 121: return RimeKey.pageDown
-        case 123: return RimeKey.left
-        case 124: return RimeKey.right
-        case 125: return RimeKey.down
-        case 126: return RimeKey.up
+        case 36, 76: specialKey = RimeKey.return
+        case 51: specialKey = RimeKey.backspace
+        case 53: specialKey = RimeKey.escape
+        case 115: specialKey = RimeKey.home
+        case 116: specialKey = RimeKey.pageUp
+        case 119: specialKey = RimeKey.end
+        case 121: specialKey = RimeKey.pageDown
+        case 123: specialKey = RimeKey.left
+        case 124: specialKey = RimeKey.right
+        case 125: specialKey = RimeKey.down
+        case 126: specialKey = RimeKey.up
         default:
-            guard
-                let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
-                scalar.isASCII
-            else {
-                return nil
-            }
-            return Int32(scalar.value)
+            specialKey = nil
         }
+
+        if let specialKey {
+            return RimeKeyMapping(
+                keyCode: specialKey,
+                modifiers: rimeModifiers(from: modifiers)
+            )
+        }
+
+        return RimeKeyboardMapper.printable(
+            characters: event.characters,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            shift: modifiers.contains(.shift),
+            control: modifiers.contains(.control)
+        )
     }
 
     private func rimeModifiers(from modifiers: NSEvent.ModifierFlags) -> Int32 {

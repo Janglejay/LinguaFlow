@@ -15,6 +15,30 @@ struct LinguaFlowRimeChecks {
             userDataDirectory: URL(fileURLWithPath: CommandLine.arguments[2])
         )
         let engine = try RimeEngine(runtime: runtime)
+        let shiftedPunctuation: [(actual: String, unmodified: String, expected: Int32)] = [
+            ("?", "/", 0x3f),
+            ("~", "`", 0x7e),
+            ("|", "\\", 0x7c),
+        ]
+        for sample in shiftedPunctuation {
+            let mapped = RimeKeyboardMapper.printable(
+                characters: sample.actual,
+                charactersIgnoringModifiers: sample.unmodified,
+                shift: true,
+                control: false
+            )
+            guard mapped == .init(keyCode: sample.expected, modifiers: 0) else {
+                fputs("Shift punctuation mapped incorrectly: \(sample), got \(String(describing: mapped))\n", stderr)
+                exit(1)
+            }
+        }
+
+        let question = engine.process(keyCode: 0x3f)
+        guard question.commit == "？" else {
+            fputs("Rime did not commit a Chinese question mark: \(question)\n", stderr)
+            exit(1)
+        }
+
         var latest = RimeSnapshot(
             consumed: false,
             preedit: "",

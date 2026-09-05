@@ -1,0 +1,59 @@
+#!/bin/zsh
+
+set -u
+
+target_volume=${3:-/}
+target_root=${target_volume%/}
+[[ -n "$target_root" ]] || target_root=/
+
+chinese_app="$target_root/Library/Input Methods/LinguaFlow.app"
+english_app="$target_root/Library/Input Methods/LinguaFlowEnglish.app"
+chinese_binary="$chinese_app/Contents/MacOS/LinguaFlowIME"
+english_binary="$english_app/Contents/MacOS/LinguaFlowEnglishIME"
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+if [[ "$target_root" != / ]]; then
+  echo "LinguaFlow was installed on $target_root; input-source registration is deferred." >&2
+  exit 0
+fi
+
+console_user=$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)
+if [[ -z "$console_user" || "$console_user" == root || "$console_user" == loginwindow ]]; then
+  echo "No logged-in desktop user; LinguaFlow will be available after the next login." >&2
+  exit 0
+fi
+
+console_uid=$(/usr/bin/id -u "$console_user" 2>/dev/null || true)
+if [[ -z "$console_uid" ]]; then
+  echo "Could not resolve the logged-in user's uid; registration is deferred." >&2
+  exit 0
+fi
+
+run_as_console_user() {
+  /bin/launchctl asuser "$console_uid" \
+    /usr/bin/sudo -H -u "$console_user" "$@"
+}
+
+if [[ -x "$lsregister" ]]; then
+  run_as_console_user "$lsregister" -f "$chinese_app" >/dev/null 2>&1 || true
+  run_as_console_user "$lsregister" -f "$english_app" >/dev/null 2>&1 || true
+fi
+
+register_and_enable() {
+  local binary=$1
+  local display_name=$2
+
+  if ! run_as_console_user "$binary" --register-input-source; then
+    echo "Could not register $display_name automatically; it can still be added in Keyboard Settings." >&2
+    return
+  fi
+
+  if ! run_as_console_user "$binary" --enable-input-source; then
+    echo "$display_name was registered but macOS did not enable it automatically." >&2
+  fi
+}
+
+register_and_enable "$chinese_binary" "LinguaFlow 中文"
+register_and_enable "$english_binary" "LinguaFlow English"
+
+exit 0

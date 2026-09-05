@@ -35,7 +35,10 @@ public struct CommittedSentenceBuffer: Sendable {
 
     @discardableResult
     public mutating func append(_ committedText: String) -> SentenceSnapshot? {
-        guard !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let containsVisibleText = !committedText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+        guard containsVisibleText || (!text.isEmpty && !startsNewSentenceOnNextAppend) else {
             return nil
         }
 
@@ -50,6 +53,37 @@ public struct CommittedSentenceBuffer: Sendable {
         }
 
         revision &+= 1
+        let isFinal = Self.endsSentence(text)
+        let snapshot = SentenceSnapshot(text: text, revision: revision, isFinal: isFinal)
+        lastSnapshot = snapshot
+        startsNewSentenceOnNextAppend = isFinal
+        return snapshot
+    }
+
+    @discardableResult
+    public mutating func replaceCharacters(
+        inUTF16Range range: NSRange,
+        with replacement: String
+    ) -> SentenceSnapshot? {
+        guard
+            range.location != NSNotFound,
+            let stringRange = Range(range, in: text)
+        else {
+            return nil
+        }
+
+        text.replaceSubrange(stringRange, with: replacement)
+        if text.count > maxCharacters {
+            text = String(text.suffix(maxCharacters))
+        }
+
+        revision &+= 1
+        guard !text.isEmpty else {
+            startsNewSentenceOnNextAppend = false
+            lastSnapshot = nil
+            return nil
+        }
+
         let isFinal = Self.endsSentence(text)
         let snapshot = SentenceSnapshot(text: text, revision: revision, isFinal: isFinal)
         lastSnapshot = snapshot
@@ -88,6 +122,6 @@ public struct CommittedSentenceBuffer: Sendable {
 
     private static func endsSentence(_ value: String) -> Bool {
         guard let character = value.last else { return false }
-        return "。！？!?\n".contains(character)
+        return "。！？.!?\n".contains(character)
     }
 }

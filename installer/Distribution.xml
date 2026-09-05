@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>LinguaFlow 双语输入法</title>
+  <organization>com.fufangjie</organization>
+  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+  <options customize="never" require-scripts="false" hostArchitectures="@ARCHITECTURE@"/>
+  <allowed-os-versions>
+    <os-version min="26.0"/>
+  </allowed-os-versions>
+  <welcome file="Welcome.html" mime-type="text/html"/>
+  <readme file="ReadMe.html" mime-type="text/html"/>
+  <license file="License.txt" mime-type="text/plain"/>
+  <conclusion file="Conclusion.html" mime-type="text/html"/>
+  <choices-outline>
+    <line choice="default"/>
+  </choices-outline>
+  <choice id="default" visible="false">
+    <pkg-ref id="com.fufangjie.pkg.LinguaFlow.input-methods"/>
+  </choice>
+  <pkg-ref id="com.fufangjie.pkg.LinguaFlow.input-methods"
+           version="@PACKAGE_VERSION@"
+           onConclusion="none">LinguaFlow-input-methods.pkg</pkg-ref>
+</installer-gui-script>

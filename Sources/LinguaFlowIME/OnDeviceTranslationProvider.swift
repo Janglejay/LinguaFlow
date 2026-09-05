@@ -21,27 +21,50 @@ enum OnDeviceTranslationError: LocalizedError {
 
 #if canImport(Translation)
 actor OnDeviceTranslationProvider: TranslationProviding {
+    private let direction: TranslationDirection
     private var session: TranslationSession?
 
-    func translate(_ request: TranslationRequest) async throws -> String {
-        let activeSession: TranslationSession
-        if let session {
-            activeSession = session
-        } else {
-            let created = TranslationSession(
-                installedSource: Locale.Language(identifier: "zh-Hans"),
-                target: Locale.Language(identifier: "en")
-            )
-            session = created
-            activeSession = created
-        }
+    init(direction: TranslationDirection) {
+        self.direction = direction
+    }
 
-        guard await activeSession.isReady else {
-            throw OnDeviceTranslationError.languagesNotInstalled
-        }
+    func translate(_ request: TranslationRequest) async throws -> String {
+        let activeSession = try await readySession()
 
         do {
             return try await activeSession.translate(request.sourceText).targetText
+        } catch TranslationError.notInstalled {
+            throw OnDeviceTranslationError.languagesNotInstalled
+        }
+    }
+
+    func translateCandidates(_ sourceTexts: [String]) async throws -> [String: String] {
+        guard !sourceTexts.isEmpty else { return [:] }
+        let activeSession = try await readySession()
+        let requests = sourceTexts.enumerated().map { index, sourceText in
+            TranslationSession.Request(
+                sourceText: sourceText,
+                clientIdentifier: String(index)
+            )
+        }
+
+        do {
+            let responses = try await activeSession.translations(from: requests)
+            var translated: [String: String] = [:]
+            for response in responses {
+                guard
+                    let identifier = response.clientIdentifier,
+                    let index = Int(identifier),
+                    sourceTexts.indices.contains(index)
+                else {
+                    continue
+                }
+                let value = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty {
+                    translated[sourceTexts[index].lowercased()] = value
+                }
+            }
+            return translated
         } catch TranslationError.notInstalled {
             throw OnDeviceTranslationError.languagesNotInstalled
         }
@@ -51,10 +74,43 @@ actor OnDeviceTranslationProvider: TranslationProviding {
         session?.cancel()
         session = nil
     }
+
+    private func readySession() async throws -> TranslationSession {
+        let activeSession: TranslationSession
+        if let session {
+            activeSession = session
+        } else {
+            let source = Locale.Language(identifier: direction.sourceLanguageIdentifier)
+            let target = Locale.Language(identifier: direction.targetLanguageIdentifier)
+            let created: TranslationSession
+            if #available(macOS 26.4, *) {
+                created = TranslationSession(
+                    installedSource: source,
+                    target: target,
+                    preferredStrategy: .lowLatency
+                )
+            } else {
+                created = TranslationSession(installedSource: source, target: target)
+            }
+            session = created
+            activeSession = created
+        }
+
+        guard await activeSession.isReady else {
+            throw OnDeviceTranslationError.languagesNotInstalled
+        }
+        return activeSession
+    }
 }
 #else
 actor OnDeviceTranslationProvider: TranslationProviding {
+    init(direction: TranslationDirection) {}
+
     func translate(_ request: TranslationRequest) async throws -> String {
+        throw OnDeviceTranslationError.frameworkUnavailable
+    }
+
+    func translateCandidates(_ sourceTexts: [String]) async throws -> [String: String] {
         throw OnDeviceTranslationError.frameworkUnavailable
     }
 }

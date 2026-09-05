@@ -64,4 +64,25 @@ public enum UnifiedPanelLayout {
 
         return CGPoint(x: x, y: y)
     }
+
+    public static func firstUsableAnchor(
+        candidates: [CGRect],
+        visibleFrames: [CGRect]
+    ) -> CGRect? {
+        candidates.first { rect in
+            guard
+                rect.origin.x.isFinite,
+                rect.origin.y.isFinite,
+                rect.size.width.isFinite,
+                rect.size.height.isFinite,
+                rect.size.height > 1
+            else {
+                return false
+            }
+
+            return visibleFrames.contains { frame in
+                frame.insetBy(dx: 1, dy: 1).contains(rect.origin)
+            }
+        }
+    }
 }

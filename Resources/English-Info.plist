@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>zh_CN</string>
+    <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>LinguaFlow 中文</string>
+    <string>LinguaFlow English</string>
     <key>CFBundleExecutable</key>
-    <string>LinguaFlowIME</string>
+    <string>LinguaFlowEnglishIME</string>
     <key>CFBundleIdentifier</key>
-    <string>com.fufangjie.inputmethod.LinguaFlow</string>
+    <string>com.fufangjie.inputmethod.LinguaFlowEnglish</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>LinguaFlow</string>
+    <string>LinguaFlow English</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -21,7 +21,7 @@
     <key>CFBundleVersion</key>
     <string>4</string>
     <key>InputMethodConnectionName</key>
-    <string>com.fufangjie.inputmethod.LinguaFlow_Connection</string>
+    <string>com.fufangjie.inputmethod.LinguaFlowEnglish_Connection</string>
     <key>InputMethodServerControllerClass</key>
     <string>LinguaFlowInputController</string>
     <key>InputMethodServerDataSourceClass</key>
@@ -29,24 +29,22 @@
     <key>InputMethodServerDelegateClass</key>
     <string>LinguaFlowInputController</string>
     <key>LinguaFlowInputMode</key>
-    <string>Chinese</string>
+    <string>English</string>
     <key>LSBackgroundOnly</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>TICapsLockLanguageSwitchCapable</key>
-    <true/>
     <key>TISIconIsTemplate</key>
     <true/>
     <key>TISInputSourceID</key>
-    <string>com.fufangjie.inputmethod.LinguaFlow</string>
+    <string>com.fufangjie.inputmethod.LinguaFlowEnglish</string>
     <key>TISIntendedLanguage</key>
-    <string>zh-Hans</string>
+    <string>en</string>
     <key>tsInputMethodCharacterRepertoireKey</key>
     <array>
-        <string>Hans</string>
+        <string>Latn</string>
     </array>
     <key>tsInputMethodIconFileKey</key>
     <string>InputSourceIconTemplate.tiff</string>

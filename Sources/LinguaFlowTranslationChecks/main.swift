@@ -12,7 +12,9 @@ struct LinguaFlowTranslationChecks {
         case .installed:
             let session = TranslationSession(installedSource: source, target: target)
             let response = try await session.translate("你好，很高兴认识你。")
-            print("LinguaFlow Translation check passed: \(response.targetText)")
+            let reverseSession = TranslationSession(installedSource: target, target: source)
+            let reverseResponse = try await reverseSession.translate("Hello, nice to meet you.")
+            print("LinguaFlow Translation checks passed: \(response.targetText) / \(reverseResponse.targetText)")
         case .supported:
             print("LinguaFlow Translation models are supported but not installed")
             exit(2)

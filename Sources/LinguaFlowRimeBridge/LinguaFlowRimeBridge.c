@@ -56,7 +56,7 @@ int lf_rime_initialize(
     traits.user_data_dir = user_data_dir;
     traits.distribution_name = "LinguaFlow";
     traits.distribution_code_name = "linguaflow";
-    traits.distribution_version = "0.1.0";
+    traits.distribution_version = "0.2.0";
     traits.app_name = "rime.linguaflow";
     traits.min_log_level = 2;
     traits.log_dir = log_dir ? log_dir : "";

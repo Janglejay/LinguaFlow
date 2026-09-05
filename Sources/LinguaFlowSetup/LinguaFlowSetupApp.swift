@@ -35,7 +35,7 @@ private struct TranslationSetupView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("LinguaFlow")
                 .font(.largeTitle.bold())
-            Text("下载 Apple 的中文与英语翻译模型后，长句翻译会完全在这台 Mac 上处理。")
+            Text("下载 Apple 的中文与英语翻译模型后，中译英与英译中都会完全在这台 Mac 上处理。")
                 .foregroundStyle(.secondary)
 
             Label(status, systemImage: isPreparing ? "arrow.down.circle" : "character.book.closed")
@@ -61,7 +61,9 @@ private struct TranslationSetupView: View {
             do {
                 try await session.prepareTranslation()
                 let response = try await session.translate("你好，很高兴认识你。")
-                status = "本地翻译已就绪：\(response.targetText)"
+                let reverseSession = TranslationSession(installedSource: target, target: source)
+                let reverseResponse = try await reverseSession.translate("Hello, nice to meet you.")
+                status = "双向翻译已就绪：\(response.targetText) / \(reverseResponse.targetText)"
             } catch {
                 status = "准备失败：\(error.localizedDescription)"
             }

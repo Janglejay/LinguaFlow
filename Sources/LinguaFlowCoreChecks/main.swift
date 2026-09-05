@@ -50,6 +50,122 @@ struct LinguaFlowCoreChecks {
             "mirror host backspace"
         )
 
+        var englishBuffer = CommittedSentenceBuffer(maxCharacters: 80)
+        _ = englishBuffer.append("I")
+        _ = englishBuffer.append(" ")
+        _ = englishBuffer.append("recieved")
+        try expect(
+            englishBuffer.currentSnapshot?.text,
+            "I recieved",
+            "preserve spaces inside an English sentence"
+        )
+        try expect(
+            englishBuffer.replaceCharacters(
+                inUTF16Range: NSRange(location: 2, length: 8),
+                with: "received"
+            )?.text,
+            "I received",
+            "replace only the tracked misspelled word"
+        )
+        _ = englishBuffer.append(".")
+        _ = englishBuffer.append(" ")
+        try expect(
+            englishBuffer.append("Thanks")?.text,
+            "Thanks",
+            "start a fresh English sentence after terminal punctuation"
+        )
+
+        try expect(
+            TranslationDirection.englishToChinese.sourceLanguageIdentifier,
+            "en",
+            "English input translates from English"
+        )
+        try expect(
+            TranslationDirection.englishToChinese.targetLanguageIdentifier,
+            "zh-Hans",
+            "English input translates into Simplified Chinese"
+        )
+        try expect(
+            TrackedTextReplacement.hostRange(
+                trackedText: "I recieved",
+                trackedUTF16Range: NSRange(location: 2, length: 8),
+                currentSelection: NSRange(location: 110, length: 0)
+            ),
+            NSRange(location: 102, length: 8),
+            "map a tracked correction to the host document"
+        )
+        try expect(
+            TrackedTextReplacement.hostRange(
+                trackedText: "I recieved",
+                trackedUTF16Range: NSRange(location: 2, length: 8),
+                currentSelection: NSRange(location: 4, length: 0)
+            ),
+            nil,
+            "refuse a correction when the host caret cannot contain the tracked text"
+        )
+
+        try expect(
+            EnglishCandidateContext.trailingWord(in: "I want to lear"),
+            EnglishCandidateContext(
+                word: "lear",
+                range: NSRange(location: 10, length: 4)
+            ),
+            "extract the unfinished English word at the caret"
+        )
+        try expect(
+            EnglishCandidateContext.trailingWord(in: "I want to learn "),
+            nil,
+            "hide candidates after a word boundary"
+        )
+        try expect(
+            EnglishCandidateInteraction.action(
+                keyCode: 48,
+                characters: "\t",
+                candidateCount: 4,
+                highlightedIndex: 2,
+                hasShift: false,
+                hasControl: false
+            ),
+            .select(index: 2),
+            "Tab accepts the highlighted English candidate"
+        )
+        try expect(
+            EnglishCandidateInteraction.action(
+                keyCode: 124,
+                characters: nil,
+                candidateCount: 4,
+                highlightedIndex: 3,
+                hasShift: false,
+                hasControl: false
+            ),
+            .highlight(index: 0),
+            "right arrow wraps English candidate highlighting"
+        )
+        try expect(
+            EnglishCandidateInteraction.action(
+                keyCode: 19,
+                characters: "2",
+                candidateCount: 4,
+                highlightedIndex: 0,
+                hasShift: false,
+                hasControl: false
+            ),
+            .select(index: 1),
+            "number keys select English candidates directly"
+        )
+        try expect(
+            EnglishCandidateInteraction.action(
+                keyCode: 49,
+                characters: " ",
+                candidateCount: 4,
+                highlightedIndex: 0,
+                hasShift: false,
+                hasControl: false
+            ),
+            .passThrough,
+            "space preserves the exact English word instead of forcing completion"
+        )
+
         let provider = ImmediateProvider()
         let coordinator = TranslationCoordinator(provider: provider, debounce: .zero)
         var received: TranslationResult?
@@ -103,6 +219,25 @@ struct LinguaFlowCoreChecks {
             visibleFrame: .init(x: 0, y: 0, width: 1440, height: 900)
         )
         try expect(above, .init(x: 480, y: 46), "flip above near the screen bottom")
+
+        let inlineCaret = CGRect(x: 906, y: 580, width: 1, height: 24)
+        let documentFallback = CGRect(x: 0, y: 0, width: 1, height: 24)
+        try expect(
+            UnifiedPanelLayout.firstUsableAnchor(
+                candidates: [inlineCaret, documentFallback],
+                visibleFrames: [.init(x: 0, y: 0, width: 1440, height: 900)]
+            ),
+            inlineCaret,
+            "prefer the inline-session caret supplied for candidate placement"
+        )
+        try expect(
+            UnifiedPanelLayout.firstUsableAnchor(
+                candidates: [.zero],
+                visibleFrames: [.init(x: 0, y: 0, width: 1440, height: 900)]
+            ),
+            nil,
+            "reject a zero fallback instead of pinning the panel to a screen corner"
+        )
 
         print("LinguaFlow core checks passed")
     }

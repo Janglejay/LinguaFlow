@@ -4,3 +4,7 @@ DerivedData/
 build/
 *.xcuserstate
 xcuserdata/
+*.dmg
+*.pkg
+*.zip
+*.sha256
