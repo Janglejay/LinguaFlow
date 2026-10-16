@@ -30,6 +30,102 @@ final class CommittedSentenceBufferTests: XCTestCase {
         XCTAssertEqual(buffer.removeLastCharacter(), .init(text: "你好", revision: 2, isFinal: false))
     }
 
+    func testRepeatedBackspaceKeepsContextInLockstepUntilEmpty() {
+        var buffer = CommittedSentenceBuffer(maxCharacters: 120)
+        _ = buffer.append("我们需要")
+
+        XCTAssertEqual(buffer.removeLastCharacter()?.text, "我们需")
+        XCTAssertEqual(buffer.removeLastCharacter()?.text, "我们")
+        XCTAssertEqual(buffer.removeLastCharacter()?.text, "我")
+        XCTAssertNil(buffer.removeLastCharacter())
+        XCTAssertTrue(buffer.isEmpty)
+        XCTAssertNil(buffer.currentSnapshot)
+
+        let revisionAfterEmptying = buffer.revision
+        XCTAssertNil(buffer.removeLastCharacter())
+        XCTAssertEqual(buffer.revision, revisionAfterEmptying)
+    }
+
+    func testDeletingTerminalPunctuationReopensCurrentSentence() {
+        var buffer = CommittedSentenceBuffer(maxCharacters: 120)
+        _ = buffer.append("你好。")
+
+        XCTAssertEqual(
+            buffer.removeLastCharacter(),
+            .init(text: "你好", revision: 2, isFinal: false)
+        )
+        XCTAssertEqual(buffer.append("呀")?.text, "你好呀")
+    }
+
+    func testTrackedCaretReconciliationRejectsSelectionAndMovedCaret() {
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 24, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .keepContext
+        )
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 3, length: 12),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext
+        )
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 17, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext
+        )
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: NSNotFound, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext
+        )
+    }
+
+    func testTrackedCaretReconciliationDefersToActiveComposition() {
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 3, length: 12),
+                hasActiveComposition: true,
+                hasTrackedContext: true
+            ),
+            .keepContext
+        )
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: nil,
+                currentSelection: NSRange(location: NSNotFound, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: false
+            ),
+            .keepContext
+        )
+        XCTAssertEqual(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: nil,
+                currentSelection: NSRange(location: NSNotFound, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext
+        )
+    }
+
     func testCapsContextByCharactersInsteadOfUtf8Bytes() {
         var buffer = CommittedSentenceBuffer(maxCharacters: 4)
 

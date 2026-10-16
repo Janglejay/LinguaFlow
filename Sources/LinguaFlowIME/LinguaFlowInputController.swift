@@ -21,7 +21,7 @@ final class LinguaFlowInputController: IMKInputController {
     private var spellingCorrection: EnglishSpellingCorrection?
     private var spellCheckRevision: UInt64 = 0
     private var spellCheckTask: Task<Void, Never>?
-    private var expectedEnglishCaretLocation: Int?
+    private var expectedHostCaretLocation: Int?
     private let englishSpellChecker = EnglishSpellChecker()
     private var englishCandidateContext: EnglishCandidateContext?
     private var candidateMeaningRevision: UInt64 = 0
@@ -112,7 +112,6 @@ final class LinguaFlowInputController: IMKInputController {
         guard let event, event.type == .keyDown else { return false }
         let client = client(from: sender)
         activeClient = client
-        captureCaretAnchor(client: client)
 
         if IsSecureEventInputEnabled() {
             clearDocumentContext()
@@ -121,15 +120,13 @@ final class LinguaFlowInputController: IMKInputController {
 
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers.contains(.command) || modifiers.contains(.option) {
-            if product == .english {
-                clearDocumentContext()
-            }
+            commitComposition(sender)
+            clearDocumentContext()
             return false
         }
 
-        if product == .english {
-            reconcileEnglishCaret(client: client)
-        }
+        reconcileTrackedCaret(client: client)
+        captureCaretAnchor(client: client)
 
         if isReturn(event), modifiers.contains(.control), let translation = latestTranslation {
             let prefix = modifiers.contains(.shift) ? "\n" : " "
@@ -143,7 +140,17 @@ final class LinguaFlowInputController: IMKInputController {
             return true
         }
 
+        if event.keyCode == 117 {
+            commitComposition(sender)
+            clearDocumentContext()
+            return false
+        }
+
         if product == .english {
+            if modifiers.contains(.control) {
+                clearDocumentContext()
+                return false
+            }
             return handleEnglish(event, client: client, modifiers: modifiers)
         }
 
@@ -153,13 +160,11 @@ final class LinguaFlowInputController: IMKInputController {
         apply(snapshot, client: client)
 
         if !snapshot.consumed {
-            if event.keyCode == 51 {
-                if sentenceBuffer.removeLastCharacter() != nil {
-                    updateTranslationDraftAndPanel(client: client)
-                } else {
-                    clearDocumentContext()
-                }
-            } else if isNavigationKey(event.keyCode) {
+            if event.keyCode == 51, !modifiers.contains(.control) {
+                mirrorHostBackspace(client: client)
+            } else if modifiers.contains(.control)
+                || isNavigationKey(event.keyCode)
+                || event.keyCode == 53 {
                 clearDocumentContext()
             }
         }
@@ -172,6 +177,7 @@ final class LinguaFlowInputController: IMKInputController {
             client?.insertText(commit, replacementRange: Self.notFoundRange)
             if !IsSecureEventInputEnabled() {
                 sentenceBuffer.append(commit)
+                recordCurrentCaret(client: client)
             }
         }
 
@@ -327,7 +333,7 @@ final class LinguaFlowInputController: IMKInputController {
         translationSourceText = nil
         translationState = .hidden
         spellingCorrection = nil
-        expectedEnglishCaretLocation = nil
+        expectedHostCaretLocation = nil
         spellCheckRevision &+= 1
         spellCheckTask?.cancel()
         spellCheckTask = nil
@@ -374,15 +380,7 @@ final class LinguaFlowInputController: IMKInputController {
         }
 
         if event.keyCode == 51 {
-            let selection = client?.selectedRange()
-            if sentenceBuffer.removeLastCharacter() != nil {
-                updateTranslationDraftAndPanel(client: client)
-            } else {
-                clearDocumentContext()
-            }
-            if let selection, selection.location != NSNotFound, selection.location > 0 {
-                expectedEnglishCaretLocation = selection.location - 1
-            }
+            mirrorHostBackspace(client: client)
             return false
         }
 
@@ -397,7 +395,7 @@ final class LinguaFlowInputController: IMKInputController {
                 updateTranslationDraftAndPanel(client: client)
             }
             if let selection, selection.location != NSNotFound {
-                expectedEnglishCaretLocation = selection.location + 1
+                expectedHostCaretLocation = selection.location + 1
             }
             return false
         }
@@ -419,7 +417,7 @@ final class LinguaFlowInputController: IMKInputController {
             updateTranslationDraftAndPanel(client: client)
         }
         if let selection, selection.location != NSNotFound {
-            expectedEnglishCaretLocation = selection.location + characters.utf16.count
+            expectedHostCaretLocation = selection.location + characters.utf16.count
         }
         return false
     }
@@ -516,7 +514,7 @@ final class LinguaFlowInputController: IMKInputController {
 
         let replacement = currentCandidates[index].text
         client.insertText(replacement, replacementRange: hostRange)
-        expectedEnglishCaretLocation = hostRange.location + replacement.utf16.count
+        expectedHostCaretLocation = hostRange.location + replacement.utf16.count
         _ = sentenceBuffer.replaceCharacters(inUTF16Range: context.range, with: replacement)
         spellingCorrection = nil
         clearEnglishCandidates()
@@ -546,12 +544,50 @@ final class LinguaFlowInputController: IMKInputController {
         return String(compact.prefix(16)) + "…"
     }
 
-    private func reconcileEnglishCaret(client: (any IMKTextInput)?) {
-        guard let expectedEnglishCaretLocation else { return }
+    private func reconcileTrackedCaret(client: (any IMKTextInput)?) {
+        let action = TrackedCaretReconciliation.action(
+            expectedCaretLocation: expectedHostCaretLocation,
+            currentSelection: client?.selectedRange() ?? Self.notFoundRange,
+            hasActiveComposition: !currentPreedit.isEmpty,
+            hasTrackedContext: sentenceBuffer.currentSnapshot != nil
+        )
+        if action == .clearContext {
+            clearDocumentContext()
+        }
+    }
+
+    private func recordCurrentCaret(client: (any IMKTextInput)?) {
         let selection = client?.selectedRange() ?? Self.notFoundRange
-        guard selection.location == expectedEnglishCaretLocation, selection.length == 0 else {
+        guard selection.location != NSNotFound, selection.length == 0 else {
+            expectedHostCaretLocation = nil
+            return
+        }
+        expectedHostCaretLocation = selection.location
+    }
+
+    private func mirrorHostBackspace(client: (any IMKTextInput)?) {
+        let selection = client?.selectedRange() ?? Self.notFoundRange
+        guard
+            let lastCharacter = sentenceBuffer.currentSnapshot?.text.last,
+            selection.location != NSNotFound,
+            selection.length == 0,
+            selection.location == expectedHostCaretLocation
+        else {
             clearDocumentContext()
             return
+        }
+
+        let removedUTF16Count = String(lastCharacter).utf16.count
+        guard selection.location >= removedUTF16Count else {
+            clearDocumentContext()
+            return
+        }
+
+        if sentenceBuffer.removeLastCharacter() != nil {
+            expectedHostCaretLocation = selection.location - removedUTF16Count
+            updateTranslationDraftAndPanel(client: client)
+        } else {
+            clearDocumentContext()
         }
     }
 
@@ -619,7 +655,7 @@ final class LinguaFlowInputController: IMKInputController {
         let replacement = correction.replacement + trailingText
 
         client.insertText(replacement, replacementRange: hostRange)
-        expectedEnglishCaretLocation = hostRange.location + replacement.utf16.count
+        expectedHostCaretLocation = hostRange.location + replacement.utf16.count
         _ = sentenceBuffer.replaceCharacters(inUTF16Range: suffixRange, with: replacement)
         spellingCorrection = nil
         updateTranslationDraftAndPanel(client: client)

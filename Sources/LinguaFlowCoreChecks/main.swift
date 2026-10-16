@@ -50,6 +50,65 @@ struct LinguaFlowCoreChecks {
             "mirror host backspace"
         )
 
+        var deletionBuffer = CommittedSentenceBuffer(maxCharacters: 80)
+        _ = deletionBuffer.append("我们需要")
+        try expect(deletionBuffer.removeLastCharacter()?.text, "我们需", "delete one character")
+        try expect(deletionBuffer.removeLastCharacter()?.text, "我们", "delete repeated character")
+        try expect(deletionBuffer.removeLastCharacter()?.text, "我", "delete down to one character")
+        try expect(deletionBuffer.removeLastCharacter(), nil, "delete final tracked character")
+        try expect(deletionBuffer.isEmpty, true, "backspace empties tracked context")
+
+        try expect(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 24, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .keepContext,
+            "keep an aligned collapsed caret"
+        )
+        try expect(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 3, length: 12),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext,
+            "clear context before a selected host deletion"
+        )
+        try expect(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 17, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext,
+            "clear context after caret navigation"
+        )
+        try expect(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: 24,
+                currentSelection: NSRange(location: 3, length: 12),
+                hasActiveComposition: true,
+                hasTrackedContext: true
+            ),
+            .keepContext,
+            "let Rime own deletion inside active composition"
+        )
+        try expect(
+            TrackedCaretReconciliation.action(
+                expectedCaretLocation: nil,
+                currentSelection: NSRange(location: NSNotFound, length: 0),
+                hasActiveComposition: false,
+                hasTrackedContext: true
+            ),
+            .clearContext,
+            "clear tracked context when the host caret is unavailable"
+        )
+
         var englishBuffer = CommittedSentenceBuffer(maxCharacters: 80)
         _ = englishBuffer.append("I")
         _ = englishBuffer.append(" ")

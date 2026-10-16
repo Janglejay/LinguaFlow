@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kept live translation context synchronized with host edits: ordinary trailing Backspace removes one tracked character, while selections, moved carets, Forward Delete, and host editing shortcuts discard unverifiable text instead of translating content that was already deleted.
+
 ## 0.2.2 - 2026-09-05
 
 - Fixed upgrades from 0.2.0 when macOS Installer had left a root-owned English input method in the user's `~/Library/Input Methods` directory. The installer now changes ownership only on that exact validated top-level 0.2.0 bundle, then migrates it through the normal logged-in-user path before registering the system copy.
